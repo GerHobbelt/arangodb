@@ -1,6 +1,9 @@
 #include "ZkdHelper.h"
 
-#include <Basics/debugging.h>
+#include "Basics/ScopeGuard.h"
+#include "Basics/debugging.h"
+#include "Containers/SmallVector.h"
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -145,7 +148,7 @@ auto zkd::ByteReader::next() -> std::optional<std::byte> {
 
 void zkd::BitWriter::append(Bit bit) {
   if (bit == Bit::ONE) {
-    _value |= std::byte{1} << (7u - _nibble);
+    _value |= std::byte{1} << (7U - _nibble);
   }
   _nibble += 1;
   if (_nibble == 8) {
@@ -271,9 +274,6 @@ auto zkd::transpose(byte_string_view bs, std::size_t dimensions) -> std::vector<
   return result;
 }
 
-
-constexpr std::size_t max_dimensions = 64;
-
 auto zkd::compareWithBox(byte_string_view cur, byte_string_view min, byte_string_view max, std::size_t dimensions)
 -> std::vector<CompareResult> {
   if (dimensions == 0) {
@@ -299,8 +299,12 @@ void zkd::compareWithBoxInto(byte_string_view cur, byte_string_view min, byte_st
   BitReader min_reader(min);
   BitReader max_reader(max);
 
-  bool isLargerThanMin[max_dimensions] = {};
-  bool isLowerThanMax[max_dimensions] = {};
+  auto const isLargerThanMin = [&result](auto const dim) {
+    return result[dim].saveMin != CompareResult::max;
+  };
+  auto const isLowerThanMax = [&result](auto const dim) {
+    return result[dim].saveMax != CompareResult::max;
+  };
 
   unsigned step = 0;
   unsigned dim = 0;
@@ -315,22 +319,20 @@ void zkd::compareWithBoxInto(byte_string_view cur, byte_string_view min, byte_st
       continue;
     }
 
-    if (!isLargerThanMin[dim]) {
+    if (!isLargerThanMin(dim)) {
       if (cur_bit == Bit::ZERO && min_bit == Bit::ONE) {
         result[dim].outStep = step;
         result[dim].flag = -1;
       } else if (cur_bit == Bit::ONE && min_bit == Bit::ZERO) {
-        isLargerThanMin[dim] = true;
         result[dim].saveMin = step;
       }
     }
 
-    if (!isLowerThanMax[dim]) {
+    if (!isLowerThanMax(dim)) {
       if (cur_bit == Bit::ONE && max_bit == Bit::ZERO) {
         result[dim].outStep = step;
         result[dim].flag = 1;
       } else if (cur_bit == Bit::ZERO && max_bit == Bit::ONE) {
-        isLowerThanMax[dim] = true;
         result[dim].saveMax = step;
       }
     }
@@ -347,7 +349,7 @@ void zkd::compareWithBoxInto(byte_string_view cur, byte_string_view min, byte_st
 auto zkd::testInBox(byte_string_view cur, byte_string_view min, byte_string_view max, std::size_t dimensions)
 -> bool {
 
-  if (dimensions == 0 && dimensions <= max_dimensions) {
+  if (dimensions == 0) {
     auto msg = std::string{"dimensions argument to "};
     msg += __func__;
     msg += " must be greater than zero.";
@@ -360,8 +362,16 @@ auto zkd::testInBox(byte_string_view cur, byte_string_view min, byte_string_view
   BitReader min_reader(min);
   BitReader max_reader(max);
 
-  bool isLargerThanMin[max_dimensions] = {};
-  bool isLowerThanMax[max_dimensions] = {};
+  using allocator_type = containers::detail::short_alloc<bool, 64, alignof(bool)>;
+  allocator_type::arena_type arena;
+  auto allocator = allocator_type{arena};
+  auto const boolArraySize = sizeof(bool) * dimensions;
+  auto* const isLargerThanMin = allocator.allocate(boolArraySize);
+  TRI_DEFER(arena.deallocate((char*)isLargerThanMin, dimensions));
+  auto* const isLowerThanMax = allocator.allocate(boolArraySize);
+  TRI_DEFER(arena.deallocate((char*)isLowerThanMax, dimensions));
+  std::fill_n(isLargerThanMin, dimensions, false);
+  std::fill_n(isLowerThanMax, dimensions, false);
 
   unsigned dim = 0;
   unsigned finished_dims = 2 * dimensions;
