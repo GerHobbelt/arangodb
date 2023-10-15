@@ -23,13 +23,15 @@
 
 #pragma once
 
+#include "Aql/QueryContext.h"
+#include "Containers/SmallVector.h"
+#include "RocksDBEngine/RocksDBMethodsMemoryTracker.h"
 #include "RocksDBEngine/RocksDBTransactionMethods.h"
 
 #include <cstdint>
-#include <memory>
 
 namespace arangodb {
-struct RocksDBMethodsMemoryTracker;
+struct ResourceMonitor;
 
 struct IRocksDBTransactionCallback {
   virtual ~IRocksDBTransactionCallback() = default;
@@ -47,7 +49,7 @@ class RocksDBTrxBaseMethods : public RocksDBTransactionMethods {
 
   ~RocksDBTrxBaseMethods() override;
 
-  virtual bool isIndexingDisabled() const final override {
+  bool isIndexingDisabled() const noexcept final override {
     return _indexingDisabled;
   }
 
@@ -120,6 +122,10 @@ class RocksDBTrxBaseMethods : public RocksDBTransactionMethods {
   rocksdb::Status RollbackToWriteBatchSavePoint() final override;
   void PopSavePoint() final override;
 
+  virtual void beginQuery(ResourceMonitor* resourceMonitor,
+                          bool isModificationQuery);
+  virtual void endQuery(bool isModificationQuery) noexcept;
+
  protected:
   virtual void cleanupTransaction();
 
@@ -128,33 +134,6 @@ class RocksDBTrxBaseMethods : public RocksDBTransactionMethods {
 
   Result doCommit();
   Result doCommitImpl();
-
-  /// @brief assumed additional indexing overhead for each entry in a
-  /// WriteBatchWithIndex. this is in addition to the actual WriteBuffer entry.
-  /// the WriteBatchWithIndex keeps all entries (which are pointers) in a
-  /// skiplist. it is unclear from the outside how much memory the skiplist
-  /// will use per entry, so this value here is just a guess.
-  static constexpr size_t fixedIndexingEntryOverhead = 32;
-
-  /// @brief assumed additional overhead for each lock that is held by the
-  /// transaction. the overhead is computed as follows:
-  /// locks are stored in rocksdb in a hash table, which maps from the locked
-  /// key to a LockInfo struct. The LockInfo struct is 120 bytes big.
-  /// we also assume some more overhead for the hash table entries and some
-  /// general overhead because the hash table is never assumed to be completely
-  /// full (load factor < 1). thus we assume 64 bytes of overhead for each
-  /// entry. this is an arbitrary value.
-  static constexpr size_t fixedLockEntryOverhead = 120 + 64;
-
-  /// @brief function to calculate overhead of a WriteBatchWithIndex entry,
-  /// depending on keySize. will return 0 if indexing is disabled in the current
-  /// transaction.
-  size_t indexingOverhead(size_t keySize) const noexcept;
-
-  /// @brief function to calculate overhead of a lock entry, depending on
-  /// keySize. will return 0 if no locks are used by the current transaction
-  /// (e.g. if the transaction is using an exclusive lock)
-  size_t lockOverhead(size_t keySize) const noexcept;
 
   /// @brief returns the payload size of the transaction's WriteBatch. this
   /// excludes locks and any potential indexes (i.e. WriteBatchWithIndex).
@@ -189,7 +168,7 @@ class RocksDBTrxBaseMethods : public RocksDBTransactionMethods {
   TRI_voc_tick_t _lastWrittenOperationTick{0};
 
   /// @brief object used for tracking memory usage
-  std::unique_ptr<RocksDBMethodsMemoryTracker> _memoryTracker;
+  RocksDBMethodsMemoryTracker _memoryTracker;
 
   bool _indexingDisabled{false};
 };
