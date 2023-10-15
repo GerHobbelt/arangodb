@@ -9091,7 +9091,7 @@ void arangodb::aql::joinIndexNodesRule(Optimizer* opt,
         return false;
       }
 
-      if (index->fields().size() != 1) {
+      if (index->fields().empty()) {
         // index on more than one attribute
         return false;
       }
@@ -9229,11 +9229,13 @@ void arangodb::aql::joinIndexNodesRule(Optimizer* opt,
             std::vector<JoinNode::IndexInfo> indexInfos;
             indexInfos.reserve(candidates.size());
             for (auto* c : candidates) {
-              indexInfos.emplace_back(
-                  JoinNode::IndexInfo{.collection = c->collection(),
-                                      .outVariable = c->outVariable(),
-                                      .condition = c->condition()->clone(),
-                                      .index = c->getIndexes()[0]});
+              indexInfos.emplace_back(JoinNode::IndexInfo{
+                  .collection = c->collection(),
+                  .outVariable = c->outVariable(),
+                  .condition = c->condition()->clone(),
+                  .index = c->getIndexes()[0],
+                  .projections = c->projections(),
+                  .usedAsSatellite = c->isUsedAsSatellite()});
               handled.emplace(c);
             }
             JoinNode* jn = plan->createNode<JoinNode>(

@@ -1364,7 +1364,7 @@ function processQuery(query, explain, planIndex) {
           info.index.condition = condition;
           iterateIndexes(info.index, 0, {id: node.id, collection: info.collection}, types, false); 
         });
-        return keyword('JOIN'); 
+        return keyword('JOIN');
       case 'IndexNode':
         collectionVariables[node.outVariable.id] = node.collection;
         if (node.filter) {
@@ -2135,7 +2135,17 @@ function processQuery(query, explain, planIndex) {
         if (info.condition && info.condition.hasOwnProperty('type')) {
           filter = '   ' + keyword('FILTER') + ' ' + buildExpression(info.condition);
         }
-        line += indent(level, false) + label + filter;
+        let projectString = '';
+        if (info.projections) {
+          projectString = '   /*' + projections(info, "projections", "projections");
+          if (!info.indexCoversProjections) {
+            projectString += " index scan + document lookup";
+          } else {
+            projectString += " index scan";
+          }
+          projectString += ' */';
+        }
+        line += indent(level, false) + label + filter + projectString;
         stringBuilder.appendLine(line);
       });
       --level;
