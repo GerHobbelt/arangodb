@@ -1069,6 +1069,9 @@ void RocksDBEngine::start() {
         : _scheduler(server.getFeature<SchedulerFeature>().SCHEDULER) {}
 
     void operator()(fu2::unique_function<void() noexcept> func) override {
+      if (_scheduler->server().isStopping()) {
+        return;
+      }
       _scheduler->queue(RequestLane::CLUSTER_INTERNAL, std::move(func));
     }
 
@@ -1719,9 +1722,13 @@ void RocksDBEngine::processTreeRebuilds() {
       return;
     }
 
+    if (server().isStopping()) {
+      return;
+    }
+
     scheduler->queue(arangodb::RequestLane::CLIENT_SLOW, [this, candidate]() {
       if (!server().isStopping()) {
-        TRI_vocbase_t* vocbase = nullptr;
+        VocbasePtr vocbase;
         try {
           auto& df = server().getFeature<DatabaseFeature>();
           vocbase = df.useDatabase(candidate.first);
@@ -1780,10 +1787,6 @@ void RocksDBEngine::processTreeRebuilds() {
         } catch (...) {
           LOG_TOPIC("0bcbf", WARN, Logger::ENGINES)
               << "caught unknown exception during tree rebuilding";
-        }
-
-        if (vocbase != nullptr) {
-          vocbase->release();
         }
       }
 
