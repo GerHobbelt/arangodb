@@ -25,7 +25,7 @@
 #include <cmath>
 #include "Pregel/Aggregator.h"
 #include "Pregel/Algorithm.h"
-#include "Pregel/Worker/GraphStore.h"
+#include "Pregel/GraphStore/GraphStore.h"
 #include "Pregel/IncomingCache.h"
 #include "Pregel/MasterContext.h"
 #include "Pregel/VertexComputation.h"
@@ -105,9 +105,8 @@ HITS::createComputation(WorkerConfig const* config) const {
 struct HITSGraphFormat : public GraphFormat<HITSValue, int8_t> {
   const std::string _resultField;
 
-  explicit HITSGraphFormat(application_features::ApplicationServer& server,
-                           std::string const& result)
-      : GraphFormat<HITSValue, int8_t>(server), _resultField(result) {}
+  explicit HITSGraphFormat(std::string const& result)
+      : GraphFormat<HITSValue, int8_t>(), _resultField(result) {}
 
   size_t estimatedEdgeSize() const override { return 0; }
 
@@ -126,7 +125,7 @@ struct HITSGraphFormat : public GraphFormat<HITSValue, int8_t> {
 };
 
 GraphFormat<HITSValue, int8_t>* HITS::inputFormat() const {
-  return new HITSGraphFormat(_server, _resultField);
+  return new HITSGraphFormat(_resultField);
 }
 
 WorkerContext* HITS::workerContext(VPackSlice userParams) const {
