@@ -51,7 +51,8 @@ auto inspect(Inspector& f, PrintableTiming& x) {
     }
     return res;
   } else {
-    return f.apply(fmt::format("{:.6f} s", x.timing.value / 1000000.));
+    return f.apply(x.timing.value / 1000000.);
+    // return f.apply(fmt::format("{:.6f} s", x.timing.value / 1000000.));
   }
 }
 struct PrintableDuration {
@@ -113,10 +114,11 @@ struct PregelTimings {
 };
 template<typename Inspector>
 auto inspect(Inspector& f, PregelTimings& x) {
-  return f.object(x).fields(
-      f.field("totalRuntime", x.totalRuntime), f.field("loading", x.loading),
-      f.field("computation", x.computation), f.field("storing", x.storing),
-      f.field("gss", x.gss));
+  return f.object(x).fields(f.field("totalRuntime", x.totalRuntime),
+                            f.field("startupTime", x.loading),
+                            f.field("computationTime", x.computation),
+                            f.field("storageTime", x.storing),
+                            f.field("gssTimes", x.gss));
 }
 
 struct GraphLoadingDetails {
@@ -222,8 +224,9 @@ auto inspect(Inspector& f, StatusDetails& x) {
                             f.field("perWorker", x.perWorker));
 }
 
-struct StatusState {
+struct PregelStatus {
   std::string stateName;
+  std::optional<std::string> errorMessage;
   ExecutionNumber id;
   std::string database;
   std::string algorithm;
@@ -239,7 +242,7 @@ struct StatusState {
   StatusDetails details;
 };
 template<typename Inspector>
-auto inspect(Inspector& f, StatusState& x) {
+auto inspect(Inspector& f, PregelStatus& x) {
   // TODO: Fix formatting.
   auto formatted_created = fmt::format("{}", x.created.time_since_epoch());
   auto formatted_expires =
@@ -248,11 +251,11 @@ auto inspect(Inspector& f, StatusState& x) {
           : "0";
 
   return f.object(x).fields(
-      f.field("state", x.stateName), f.field("id", x.id),
-      f.field("database", x.database), f.field("algorithm", x.algorithm),
-      f.field("created", formatted_created),
+      f.field("state", x.stateName), f.field("errorMessage", x.errorMessage),
+      f.field("id", x.id), f.field("database", x.database),
+      f.field("algorithm", x.algorithm), f.field("created", formatted_created),
       f.field("expires", formatted_expires), f.field("ttl", x.ttl),
-      f.field("parallelism", x.parallelism), f.field("timings", x.timings),
+      f.field("parallelism", x.parallelism), f.embedFields(x.timings),
       f.field("gss", x.gss),
 
       // TODO embed aggregators field (it already has "aggregators" as key)
@@ -261,16 +264,23 @@ auto inspect(Inspector& f, StatusState& x) {
       f.field("vertexCount", x.vertexCount), f.field("edgeCount", x.edgeCount),
       f.field("details", x.details));
 }
+struct StatusState {
+  std::shared_ptr<PregelStatus> status = std::make_shared<PregelStatus>();
+};
+template<typename Inspector>
+auto inspect(Inspector& f, StatusState& x) {
+  return f.object(x).fields(f.field("status", x.status));
+}
 
 template<typename Runtime>
 struct StatusHandler : actor::HandlerBase<Runtime, StatusState> {
   auto operator()(message::StatusStart& msg) -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->id = msg.id;
-    this->state->database = msg.database;
-    this->state->algorithm = msg.algorithm;
-    this->state->ttl = msg.ttl;
-    this->state->parallelism = msg.parallelism;
+    this->state->status->stateName = msg.state;
+    this->state->status->id = msg.id;
+    this->state->status->database = msg.database;
+    this->state->status->algorithm = msg.algorithm;
+    this->state->status->ttl = msg.ttl;
+    this->state->status->parallelism = msg.parallelism;
 
     LOG_TOPIC("ea4f4", INFO, Logger::PREGEL)
         << fmt::format("Status Actor {} started", this->self);
@@ -279,26 +289,27 @@ struct StatusHandler : actor::HandlerBase<Runtime, StatusState> {
 
   auto operator()(message::LoadingStarted loading)
       -> std::unique_ptr<StatusState> {
-    this->state->stateName = loading.state;
-    this->state->timings.loading.setStart(loading.time);
+    this->state->status->stateName = loading.state;
+    this->state->status->timings.loading.setStart(loading.time);
     return std::move(this->state);
   }
   auto operator()(message::GraphLoadingUpdate msg)
       -> std::unique_ptr<StatusState> {
-    this->state->details.update(
+    this->state->status->details.update(
         this->sender.server,
         GraphLoadingDetails{.verticesLoaded = msg.verticesLoaded,
                             .edgesLoaded = msg.edgesLoaded,
                             .memoryBytesUsed = msg.memoryBytesUsed});
-    this->state->vertexCount =
-        this->state->details.combined.loading.verticesLoaded;
-    this->state->edgeCount = this->state->details.combined.loading.edgesLoaded;
+    this->state->status->vertexCount =
+        this->state->status->details.combined.loading.verticesLoaded;
+    this->state->status->edgeCount =
+        this->state->status->details.combined.loading.edgesLoaded;
     return std::move(this->state);
   }
 
   auto operator()(message::GlobalSuperStepUpdate msg)
       -> std::unique_ptr<StatusState> {
-    this->state->details.update(
+    this->state->status->details.update(
         this->sender.server, msg.gss,
         GlobalSuperStepDetails{
             .verticesProcessed = msg.verticesProcessed,
@@ -310,18 +321,18 @@ struct StatusHandler : actor::HandlerBase<Runtime, StatusState> {
 
   auto operator()(message::GraphStoringUpdate msg)
       -> std::unique_ptr<StatusState> {
-    this->state->details.update(
+    this->state->status->details.update(
         this->sender.server,
         GraphStoringDetails{.verticesStored = msg.verticesStored});
     return std::move(this->state);
   }
 
   auto operator()(message::PregelStarted msg) -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->timings.totalRuntime.setStart(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->timings.totalRuntime.setStart(msg.time);
 
     auto duration = std::chrono::microseconds{msg.time.value};
-    this->state->created =
+    this->state->status->created =
         std::chrono::time_point<std::chrono::steady_clock>{duration};
 
     return std::move(this->state);
@@ -329,60 +340,63 @@ struct StatusHandler : actor::HandlerBase<Runtime, StatusState> {
 
   auto operator()(message::ComputationStarted msg)
       -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->timings.loading.setStop(msg.time);
-    this->state->timings.computation.setStart(msg.time);
-    this->state->timings.gss.push_back(PrintableDuration::withStart(msg.time));
+    this->state->status->stateName = msg.state;
+    this->state->status->timings.loading.setStop(msg.time);
+    this->state->status->timings.computation.setStart(msg.time);
+    this->state->status->timings.gss.push_back(
+        PrintableDuration::withStart(msg.time));
     return std::move(this->state);
   }
 
   auto operator()(message::StoringStarted msg) -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->timings.computation.setStop(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->timings.computation.setStop(msg.time);
 
-    if (not this->state->timings.gss.empty()) {
-      this->state->timings.gss.back().setStop(msg.time);
+    if (not this->state->status->timings.gss.empty()) {
+      this->state->status->timings.gss.back().setStop(msg.time);
     }
 
-    this->state->timings.storing.setStart(msg.time);
+    this->state->status->timings.storing.setStart(msg.time);
     return std::move(this->state);
   }
 
   auto operator()(message::GlobalSuperStepStarted msg)
       -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->gss = msg.gss;
-    if (not this->state->timings.gss.empty()) {
-      this->state->timings.gss.back().setStop(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->gss = msg.gss;
+    if (not this->state->status->timings.gss.empty()) {
+      this->state->status->timings.gss.back().setStop(msg.time);
     }
-    this->state->timings.gss.push_back(PrintableDuration::withStart(msg.time));
-    this->state->aggregators = std::move(msg.aggregators);
-    this->state->vertexCount = msg.vertexCount;
-    this->state->edgeCount = msg.edgeCount;
+    this->state->status->timings.gss.push_back(
+        PrintableDuration::withStart(msg.time));
+    this->state->status->aggregators = std::move(msg.aggregators);
+    this->state->status->vertexCount = msg.vertexCount;
+    this->state->status->edgeCount = msg.edgeCount;
     return std::move(this->state);
   }
 
   auto operator()(message::PregelFinished& msg)
       -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->expires =
-        std::chrono::steady_clock::now() + this->state->ttl.duration;
-    this->state->timings.storing.setStop(msg.time);
-    this->state->timings.totalRuntime.setStop(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->expires =
+        std::chrono::steady_clock::now() + this->state->status->ttl.duration;
+    this->state->status->timings.storing.setStop(msg.time);
+    this->state->status->timings.totalRuntime.setStop(msg.time);
 
     return std::move(this->state);
   }
 
   auto operator()(message::InFatalError& msg) -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->timings.stopAll(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->errorMessage = msg.errorMessage;
+    this->state->status->timings.stopAll(msg.time);
 
     return std::move(this->state);
   }
 
   auto operator()(message::Canceled& msg) -> std::unique_ptr<StatusState> {
-    this->state->stateName = msg.state;
-    this->state->timings.stopAll(msg.time);
+    this->state->status->stateName = msg.state;
+    this->state->status->timings.stopAll(msg.time);
 
     return std::move(this->state);
   }
