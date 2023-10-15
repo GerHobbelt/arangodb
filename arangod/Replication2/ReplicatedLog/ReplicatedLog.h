@@ -65,15 +65,14 @@ struct IReplicatedLogMethodsBase {
   // no range means everything
   virtual auto getCommittedLogIterator(
       std::optional<LogRange> range = std::nullopt)
-      -> std::unique_ptr<LogRangeIterator> = 0;
+      -> std::unique_ptr<LogViewRangeIterator> = 0;
   virtual auto waitFor(LogIndex) -> ILogParticipant::WaitForFuture = 0;
   virtual auto waitForIterator(LogIndex)
       -> ILogParticipant::WaitForIteratorFuture = 0;
 };
 
 struct IReplicatedLogLeaderMethods : IReplicatedLogMethodsBase {
-  // TODO waitForSync parameter is missing
-  virtual auto insert(LogPayload) -> LogIndex = 0;
+  virtual auto insert(LogPayload, bool waitForSync) -> LogIndex = 0;
 };
 
 struct IReplicatedLogFollowerMethods : IReplicatedLogMethodsBase {
