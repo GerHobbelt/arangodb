@@ -1,6 +1,8 @@
 devel
 -----
 
+* Updated bundled version of libunwind to 1.7-rc2.
+
 * In batched query results, when executing requests for 
   `/_api/cursor/<cursorId>/<batchId>`, removed the restriction that the user 
   would only be able to fetch the next batch using the next batch id in 
@@ -14,6 +16,10 @@ devel
   Windows-specific issue of the IOHeartbeatThread.
 
 * FE-263: Improve forceAtlas layout in the Graph Viewer.
+
+* BTS-1331: Reduced the amount of required network calls when using
+  traversals combined with FILTER and/or PRUNE statements in a
+  GeneralGraph in combination with a clustered environment.
 
 * FE-256: Minor Graph Viewer improvements:
   - re-order right click menu
@@ -84,13 +90,13 @@ devel
   If a non-existing collection is specified in the `edgeCollections` or
   `vertexCollections` options of an AQL traversal, the query will now fail 
   with a `collection or view not found` error. Also, if wrong collection
-  types are used (e.g. a document collection or a view for `edgeCollections`), 
+  types are used (e.g. a document collection or a view for `edgeCollections`),
   then an error is raised about an invalid collection type being used.
 
-  This is a behavior change compared to previous versions, which ignored 
-  specifying non-existing vertex collections and had undefined behavior when 
+  This is a behavior change compared to previous versions, which ignored
+  specifying non-existing vertex collections and had undefined behavior when
   specifying non-existing edge collections or using a vertex collection
-  instead of an edge collection.  
+  instead of an edge collection.
 
 * Updated arangosync to v2.17.0.
 
