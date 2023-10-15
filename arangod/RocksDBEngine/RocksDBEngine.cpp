@@ -754,24 +754,23 @@ void RocksDBEngine::prepare() {
 }
 
 void RocksDBEngine::verifySstFiles(rocksdb::Options const& options) const {
+  TRI_ASSERT(!_path.empty());
+
   rocksdb::SstFileReader sstReader(options);
-  for (auto const& fileName : TRI_FullTreeDirectory(dataPath().c_str())) {
+  for (auto const& fileName : TRI_FullTreeDirectory(_path.c_str())) {
     if (!fileName.ends_with(".sst")) {
       continue;
     }
-    rocksdb::Status res =
-        sstReader.Open(basics::FileUtils::buildFilename(dataPath(), fileName));
-    if (!res.ok()) {
-      auto result = rocksutils::convertStatus(res);
-      LOG_TOPIC("40edd", FATAL, arangodb::Logger::STARTUP)
-          << result.errorMessage();
-      FATAL_ERROR_EXIT_CODE(TRI_EXIT_SST_FILE_CHECK);
+    std::string filename = basics::FileUtils::buildFilename(_path, fileName);
+    rocksdb::Status res = sstReader.Open(fileName);
+    if (res.ok()) {
+      res = sstReader.VerifyChecksum();
     }
-    res = sstReader.VerifyChecksum();
     if (!res.ok()) {
       auto result = rocksutils::convertStatus(res);
       LOG_TOPIC("2943c", FATAL, arangodb::Logger::STARTUP)
-          << result.errorMessage();
+          << "error when verifying .sst file '" << filename
+          << "': " << result.errorMessage();
       FATAL_ERROR_EXIT_CODE(TRI_EXIT_SST_FILE_CHECK);
     }
   }
@@ -797,7 +796,6 @@ void RocksDBEngine::start() {
 
   // set the database sub-directory for RocksDB
   auto& databasePathFeature = server().getFeature<DatabasePathFeature>();
-
   _path = databasePathFeature.subdirectoryName("engine-rocksdb");
 
   [[maybe_unused]] bool createdEngineDir = false;
@@ -1589,14 +1587,6 @@ ErrorCode RocksDBEngine::saveReplicationApplierConfiguration(
 std::unique_ptr<TRI_vocbase_t> RocksDBEngine::openDatabase(
     arangodb::CreateDatabaseInfo&& info, bool isUpgrade) {
   return openExistingDatabase(std::move(info), true, isUpgrade);
-}
-
-// TODO -- should take info
-std::unique_ptr<TRI_vocbase_t> RocksDBEngine::createDatabase(
-    arangodb::CreateDatabaseInfo&& info, ErrorCode& status) {
-  status = TRI_ERROR_NO_ERROR;
-  return std::make_unique<TRI_vocbase_t>(TRI_VOCBASE_TYPE_NORMAL,
-                                         std::move(info));
 }
 
 Result RocksDBEngine::writeCreateDatabaseMarker(TRI_voc_tick_t id,
@@ -2780,8 +2770,7 @@ void RocksDBEngine::addSystemDatabase() {
 std::unique_ptr<TRI_vocbase_t> RocksDBEngine::openExistingDatabase(
     arangodb::CreateDatabaseInfo&& info, bool wasCleanShutdown,
     bool isUpgrade) {
-  auto vocbase =
-      std::make_unique<TRI_vocbase_t>(TRI_VOCBASE_TYPE_NORMAL, std::move(info));
+  auto vocbase = std::make_unique<TRI_vocbase_t>(std::move(info));
 
   VPackBuilder builder;
   auto scanViews = [&](std::string_view type) {
