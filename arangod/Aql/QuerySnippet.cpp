@@ -1,14 +1,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2023 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2024 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
-/// Licensed under the Apache License, Version 2.0 (the "License");
+/// Licensed under the Business Source License 1.1 (the "License");
 /// you may not use this file except in compliance with the License.
 /// You may obtain a copy of the License at
 ///
-///     http://www.apache.org/licenses/LICENSE-2.0
+///     https://github.com/arangodb/arangodb/blob/devel/LICENSE
 ///
 /// Unless required by applicable law or agreed to in writing, software
 /// distributed under the License is distributed on an "AS IS" BASIS,
@@ -190,6 +190,9 @@ void CloneWorker::setUsedShardsOnClone(ExecutionNode* node,
       if (joinNode != nullptr) {
         // found a JoinNode, now add the `i` th shard for used collections
         for (auto& idx : joinNode->getIndexInfos()) {
+          if (idx.usedAsSatellite) {
+            continue;
+          }
           auto const& shards = permuter->second.at(idx.collection->name());
           idx.usedShard = *std::next(shards.begin(), _shardId);
         }
@@ -328,7 +331,8 @@ void QuerySnippet::addNode(ExecutionNode* node) {
       break;
     }
     case ExecutionNode::JOIN: {
-      _expansions.emplace_back(node, false, false);
+      _expansions.emplace_back(
+          node, true, /* handled in separately in prepareFirstBranch */ false);
       break;
     }
     case ExecutionNode::ENUMERATE_IRESEARCH_VIEW: {
@@ -654,7 +658,9 @@ auto QuerySnippet::prepareFirstBranch(
         }
 
         idx.usedShard = *myExp.begin();
-        myExpFinal.insert({idx.collection->name(), std::move(myExp)});
+        if (myExp.size() > 1) {
+          myExpFinal.insert({idx.collection->name(), std::move(myExp)});
+        }
       }
 
     } else if (exp.node->getType() == ExecutionNode::ENUMERATE_IRESEARCH_VIEW) {
@@ -888,11 +894,6 @@ auto QuerySnippet::prepareFirstBranch(
       }
     }
     if (exp.doExpand) {
-      auto collectionAccessingNode =
-          dynamic_cast<CollectionAccessingNode*>(exp.node);
-      TRI_ASSERT(collectionAccessingNode != nullptr);
-      TRI_ASSERT(!collectionAccessingNode->isUsedAsSatellite());
-
 #ifdef ARANGODB_ENABLE_MAINTAINER_MODE
       size_t numberOfShardsToPermutate = 0;
       // set the max loop index (note this will essentially be done only once)

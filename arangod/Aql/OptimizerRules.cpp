@@ -1,14 +1,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2023 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2024 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
-/// Licensed under the Apache License, Version 2.0 (the "License");
+/// Licensed under the Business Source License 1.1 (the "License");
 /// you may not use this file except in compliance with the License.
 /// You may obtain a copy of the License at
 ///
-///     http://www.apache.org/licenses/LICENSE-2.0
+///     https://github.com/arangodb/arangodb/blob/devel/LICENSE
 ///
 /// Unless required by applicable law or agreed to in writing, software
 /// distributed under the License is distributed on an "AS IS" BASIS,
@@ -1780,7 +1780,10 @@ void arangodb::aql::moveCalculationsDownRule(
   VarSet usedHere;
   bool modified = false;
 
+  size_t i = 0;
   for (auto const& n : nodes) {
+    bool const isLastVariable = ++i == nodes.size();
+
     // this is the variable that the calculation will set
     Variable const* variable = nullptr;
 
@@ -1811,28 +1814,34 @@ void arangodb::aql::moveCalculationsDownRule(
       auto current = stack.back();
       stack.pop_back();
 
-      bool done = false;
+      auto const currentType = current->getType();
+      bool tryToPushIntoSubquery = false;
 
-      usedHere.clear();
-      current->getVariablesUsedHere(usedHere);
-      for (auto const& v : usedHere) {
-        if (v == variable) {
+      if (currentType == EN::SUBQUERY && !current->isVarUsedLater(variable)) {
+        current = ExecutionNode::castTo<SubqueryNode*>(current)->getSubquery();
+        while (current->hasDependency()) {
+          current = current->getFirstDependency();
+        }
+        tryToPushIntoSubquery = true;
+      } else {
+        usedHere.clear();
+        current->getVariablesUsedHere(usedHere);
+
+        bool const done = std::find(usedHere.begin(), usedHere.end(),
+                                    variable) != usedHere.end();
+
+        if (done) {
           // the node we're looking at needs the variable we're setting.
           // can't push further!
-          done = true;
           break;
         }
       }
 
-      if (done) {
-        // done with optimizing this calculation node
-        break;
-      }
-
-      auto const currentType = current->getType();
-
-      if (currentType == EN::FILTER || currentType == EN::SORT ||
-          currentType == EN::LIMIT || currentType == EN::SUBQUERY) {
+      if (tryToPushIntoSubquery) {
+        lastNode = current;
+      } else if (currentType == EN::FILTER || currentType == EN::SORT ||
+                 currentType == EN::LIMIT || currentType == EN::SUBQUERY ||
+                 currentType == EN::SINGLETON) {
         // we found something interesting that justifies moving our node down
         if (currentType == EN::LIMIT &&
             arangodb::ServerState::instance()->isCoordinator()) {
@@ -1851,7 +1860,6 @@ void arangodb::aql::moveCalculationsDownRule(
         }
 
         lastNode = current;
-
       } else if (currentType == EN::INDEX ||
                  currentType == EN::ENUMERATE_COLLECTION ||
                  currentType == EN::ENUMERATE_IRESEARCH_VIEW ||
@@ -1878,6 +1886,14 @@ void arangodb::aql::moveCalculationsDownRule(
       // and re-insert into after the last "good" node
       plan->insertDependency(lastNode->getFirstParent(), n);
       modified = true;
+
+      // any changes done here may affect the following iterations
+      // of this optimizer rule, so we need to recalculate the
+      // variable usage here.
+      if (!isLastVariable) {
+        plan->clearVarUsageComputed();
+        plan->findVarUsage();
+      }
     }
   }
 
@@ -4459,7 +4475,7 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
             auto dbCollectNode = plan->createNode<CollectNode>(
                 plan.get(), plan->nextId(), collectNode->getOptions(),
                 collectNode->groupVariables(), aggregateVariables, nullptr,
-                nullptr, std::vector<Variable const*>(),
+                nullptr, std::vector<std::pair<Variable const*, std::string>>{},
                 collectNode->variableMap(), false);
 
             dbCollectNode->addDependency(previous);
@@ -4493,7 +4509,7 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
             auto dbCollectNode = plan->createNode<CollectNode>(
                 plan.get(), plan->nextId(), collectNode->getOptions(),
                 groupVariables, collectNode->aggregateVariables(), nullptr,
-                nullptr, std::vector<Variable const*>(),
+                nullptr, std::vector<std::pair<Variable const*, std::string>>{},
                 collectNode->variableMap(), true);
 
             dbCollectNode->addDependency(previous);
@@ -4552,8 +4568,8 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
             auto dbCollectNode = plan->createNode<CollectNode>(
                 plan.get(), plan->nextId(), collectNode->getOptions(), outVars,
                 dbServerAggVars, nullptr, nullptr,
-                std::vector<Variable const*>(), collectNode->variableMap(),
-                false);
+                std::vector<std::pair<Variable const*, std::string>>{},
+                collectNode->variableMap(), false);
 
             dbCollectNode->addDependency(previous);
             target->replaceDependency(previous, dbCollectNode);
@@ -8948,8 +8964,9 @@ void arangodb::aql::optimizeProjections(Optimizer* opt,
                                         std::unique_ptr<ExecutionPlan> plan,
                                         OptimizerRule const& rule) {
   containers::SmallVector<ExecutionNode*, 8> nodes;
-  plan->findNodesOfType(nodes, {EN::INDEX, EN::ENUMERATE_COLLECTION, EN::JOIN},
-                        true);
+  plan->findNodesOfType(
+      nodes, {EN::INDEX, EN::ENUMERATE_COLLECTION, EN::JOIN, EN::MATERIALIZE},
+      true);
 
   auto replace = [&plan](ExecutionNode* self, Projections& p,
                          Variable const* searchVariable, size_t index) {
@@ -8978,19 +8995,36 @@ void arangodb::aql::optimizeProjections(Optimizer* opt,
       auto* joinNode = ExecutionNode::castTo<JoinNode*>(n);
       size_t index = 0;
       for (auto& it : joinNode->getIndexInfos()) {
-        if (it.isLateMaterialized) {
-          // For late materialization in join nodes, that variables
-          // are already set by the optimizer rule for late materialization
-          continue;
-        }
         modified |= replace(n, it.projections, it.outVariable, index++);
       }
+    } else if (n->getType() == EN::MATERIALIZE) {
+      auto* matNode = dynamic_cast<materialize::MaterializeRocksDBNode*>(n);
+      if (matNode == nullptr) {
+        continue;
+      }
+
+      containers::FlatHashSet<AttributeNamePath> attributes;
+      if (utils::findProjections(matNode, &matNode->outVariable(),
+                                 /*expectedAttribute*/ "",
+                                 /*excludeStartNodeFilterCondition*/ true,
+                                 attributes)) {
+        if (attributes.size() <= DocumentProducingNode::kMaxProjections) {
+          matNode->projections() = Projections(std::move(attributes));
+        }
+      }
+
+      modified |= replace(n, matNode->projections(), &matNode->outVariable(),
+                          /*index*/ 0);
     } else {
       // IndexNode or EnumerateCollectionNode.
       TRI_ASSERT(n->getType() == EN::ENUMERATE_COLLECTION ||
                  n->getType() == EN::INDEX);
 
       auto* documentNode = ExecutionNode::castTo<DocumentProducingNode*>(n);
+      if (documentNode->projections().hasOutputRegisters()) {
+        // Some late materialize rule sets output registers
+        continue;
+      }
       modified |= documentNode->recalculateProjections(plan.get());
       modified |= replace(n, documentNode->projections(),
                           documentNode->outVariable(), /*index*/ 0);

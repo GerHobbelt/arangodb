@@ -1,14 +1,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2023 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2024 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
-/// Licensed under the Apache License, Version 2.0 (the "License");
+/// Licensed under the Business Source License 1.1 (the "License");
 /// you may not use this file except in compliance with the License.
 /// You may obtain a copy of the License at
 ///
-///     http://www.apache.org/licenses/LICENSE-2.0
+///     https://github.com/arangodb/arangodb/blob/devel/LICENSE
 ///
 /// Unless required by applicable law or agreed to in writing, software
 /// distributed under the License is distributed on an "AS IS" BASIS,
@@ -103,21 +103,6 @@ auto DocumentStateErrorHandler::handleOpResult(
         << "Index creation " << op.properties.toJson() << " on shard "
         << op.shard
         << " failed because a TTL index already exists, ignoring: " << res;
-    return TRI_ERROR_NO_ERROR;
-  }
-  if (res.is(TRI_ERROR_REPLICATION_REPLICATED_STATE_NOT_FOUND)) {
-    // During index creation, the `RocksDBCollection::createIndex` method tries
-    // to fetch the document state, in order to potentially replicate the
-    // operation. However, if the document state is to be dropped, the fetch
-    // operation will fail. In that case, it is alright to abandon the index
-    // creation attempt, since the document state is about to be wiped
-    // completely. We must prevent the server from crashing.
-    LOG_CTX("1ea43", DEBUG, _loggerContext)
-        << "Index creation " << op.properties.toJson() << " on shard "
-        << op.shard
-        << " failed because the document state is no longer available, "
-           "ignoring: "
-        << res;
     return TRI_ERROR_NO_ERROR;
   }
   return res;

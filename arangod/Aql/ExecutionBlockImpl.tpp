@@ -1,14 +1,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 /// DISCLAIMER
 ///
-/// Copyright 2014-2022 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2014-2024 ArangoDB GmbH, Cologne, Germany
 /// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
 ///
-/// Licensed under the Apache License, Version 2.0 (the "License");
+/// Licensed under the Business Source License 1.1 (the "License");
 /// you may not use this file except in compliance with the License.
 /// You may obtain a copy of the License at
 ///
-///     http://www.apache.org/licenses/LICENSE-2.0
+///     https://github.com/arangodb/arangodb/blob/devel/LICENSE
 ///
 /// Unless required by applicable law or agreed to in writing, software
 /// distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,7 +26,6 @@
 
 #pragma once
 
-#include "Aql/types.h"
 #include "ExecutionBlockImpl.h"
 
 #include "Aql/AqlCallStack.h"
@@ -34,21 +33,22 @@
 #include "Aql/AqlItemBlockManager.h"
 #include "Aql/ExecutionEngine.h"
 #include "Aql/ExecutionState.h"
+#include "Aql/Executor/IResearchViewExecutor.h"
 #include "Aql/InputAqlItemRow.h"
-#include "Aql/IResearchViewExecutor.h"
 #include "Aql/RegisterInfos.h"
 #include "Aql/ShadowAqlItemRow.h"
-#include "Aql/SkipResult.h"
 #include "Aql/SimpleModifier.h"
+#include "Aql/SkipResult.h"
 #include "Aql/Timing.h"
 #include "Aql/UpsertModifier.h"
+#include "Aql/types.h"
 #include "Basics/ScopeGuard.h"
-#include "Scheduler/SchedulerFeature.h"
 #include "Graph/Providers/ClusterProvider.h"
 #include "Graph/Providers/SingleServerProvider.h"
 #include "Graph/Steps/ClusterProviderStep.h"
 #include "Graph/Steps/SingleServerProviderStep.h"
 #include "Graph/algorithm-aliases.h"
+#include "Scheduler/SchedulerFeature.h"
 
 #include <absl/strings/str_cat.h>
 
@@ -1440,12 +1440,8 @@ auto ExecutionBlockImpl<Executor>::executeFastForward(
         if constexpr (std::is_same_v<AqlCallType, AqlCall>) {
           return fastForwardCall;
         } else {
-#ifndef _WIN32
-          // For some reason our Windows compiler complains about this static
-          // assert in the cases that should be in the above constexpr path.
-          // So simply not compile it in.
           static_assert(std::is_same_v<AqlCallType, AqlCallSet>);
-#endif
+
           auto call = AqlCallSet{};
           call.calls.emplace_back(typename AqlCallSet::DepCallPair{
               dependency, AqlCallList{fastForwardCall}});
@@ -2473,7 +2469,8 @@ bool ExecutionBlockImpl<Executor>::PrefetchTask::rearmForNextCall(
   TRI_ASSERT(!_result);
   _stack = stack;
   // intentionally do not reset _firstFailure
-  auto old = _state.exchange({Status::Pending, false});
+  auto old =
+      _state.exchange({Status::Pending, false}, std::memory_order_release);
   TRI_ASSERT(old.status == Status::Consumed);
   // if the task was abandoned, we want to reschedule it!
   return old.abandoned;
@@ -2481,11 +2478,12 @@ bool ExecutionBlockImpl<Executor>::PrefetchTask::rearmForNextCall(
 
 template<class Executor>
 void ExecutionBlockImpl<Executor>::PrefetchTask::waitFor() const noexcept {
+  std::unique_lock<std::mutex> guard(_lock);
   // (1) - this acquire-load synchronizes with the release-store (3)
   if (_state.load(std::memory_order_acquire).status == Status::Finished) {
     return;
   }
-  std::unique_lock<std::mutex> guard(_lock);
+
   _bell.wait(guard, [this]() {
     // (2) - this acquire-load synchronizes with the release-store (3)
     return _state.load(std::memory_order_acquire).status == Status::Finished;
@@ -2538,9 +2536,6 @@ void ExecutionBlockImpl<Executor>::PrefetchTask::execute() {
 
     TRI_ASSERT(_result.has_value());
 
-    // (3) - this release-store synchronizes with the acquire-load (1, 2)
-    updateStatus(Status::Finished, std::memory_order_release);
-
     wakeupWaiter();
   }
 }
@@ -2551,7 +2546,7 @@ void ExecutionBlockImpl<Executor>::PrefetchTask::setFailure(Result&& res) {
   if (_firstFailure.ok()) {
     _firstFailure = std::move(res);
   }
-  discard(/*isFinished*/ true);
+  _result.reset();
   wakeupWaiter();
 }
 
@@ -2560,6 +2555,8 @@ void ExecutionBlockImpl<Executor>::PrefetchTask::wakeupWaiter() noexcept {
   // need to temporarily lock the mutex to enforce serialization with the
   // waiting thread
   _lock.lock();
+  // (3) - this release-store synchronizes with the acquire-load (1, 2)
+  _state.store({Status::Finished, true}, std::memory_order_release);
   _lock.unlock();
 
   _bell.notify_one();

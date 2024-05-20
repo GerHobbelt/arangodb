@@ -2,10 +2,11 @@ import { Link, Stack } from "@chakra-ui/react";
 import { createColumnHelper } from "@tanstack/react-table";
 import { GenericAnalyzerDescription } from "arangojs/analyzer";
 import React from "react";
-import { Link as RouterLink, useHistory } from "react-router-dom";
+import { useHistory } from "react-router-dom";
 import { ReactTable } from "../../../components/table/ReactTable";
 import { TableControl } from "../../../components/table/TableControl";
 import { useSortableReactTable } from "../../../components/table/useSortableReactTable";
+import { encodeHelper } from "../../../utils/encodeHelper";
 import { AnalyzerTypes } from "../Analyzer.types";
 import { useAnalyzersContext } from "../AnalyzersContext";
 import { TYPE_TO_LABEL_MAP } from "../AnalyzersHelpers";
@@ -22,10 +23,11 @@ const TABLE_COLUMNS = [
     id: "name",
     cell: info => {
       const cellValue = info.cell.getValue();
+      const { encoded: encodedAnalyzerName } = encodeHelper(cellValue);
+      // need to use href here instead of RouteLink due to a bug in react-router
       return (
         <Link
-          as={RouterLink}
-          to={`/analyzers/${cellValue}`}
+          href={`#analyzers/${encodedAnalyzerName}`}
           textDecoration="underline"
           color="blue.500"
           _hover={{
@@ -104,7 +106,11 @@ export const AnalyzersTable = () => {
         table={tableInstance}
         emptyStateMessage="No analyzers found"
         onRowSelect={row => {
-          history.push(`/analyzers/${row.original.name}`);
+          const { encoded: encodedAnalyzerName } = encodeHelper(
+            row.original.name
+          );
+
+          history.push(`/analyzers/${encodedAnalyzerName}`);
         }}
       />
     </Stack>
