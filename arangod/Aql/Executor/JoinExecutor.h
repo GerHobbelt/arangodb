@@ -26,11 +26,10 @@
 
 #include "Aql/AqlCall.h"
 #include "Aql/AqlItemBlockInputRange.h"
-#include "Aql/Ast.h"
 #include "Aql/DocumentProducingHelper.h"
+#include "Aql/ExecutionNode/JoinNode.h"
 #include "Aql/ExecutionState.h"
 #include "Aql/IndexJoinStrategy.h"
-#include "Aql/JoinNode.h"
 #include "Aql/InputAqlItemRow.h"
 #include "Aql/NonConstExpressionContainer.h"
 #include "Aql/RegisterId.h"
@@ -63,9 +62,7 @@ class QueryContext;
 template<BlockPassthrough>
 class SingleRowFetcher;
 
-struct AstNode;
 struct Collection;
-struct NonConstExpression;
 
 struct JoinExecutorInfos {
   struct IndexInfo {

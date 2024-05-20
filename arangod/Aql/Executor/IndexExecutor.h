@@ -30,8 +30,8 @@
 #include "Aql/AqlItemBlockInputRange.h"
 #include "Aql/Ast.h"
 #include "Aql/DocumentProducingHelper.h"
+#include "Aql/ExecutionNode/IndexNode.h"
 #include "Aql/ExecutionState.h"
-#include "Aql/IndexNode.h"
 #include "Aql/InputAqlItemRow.h"
 #include "Aql/NonConstExpressionContainer.h"
 #include "Aql/RegisterInfos.h"
@@ -39,13 +39,14 @@
 #include "Transaction/Methods.h"
 
 #include <memory>
+#include <vector>
 
 namespace arangodb {
 class IndexIterator;
 struct ResourceMonitor;
 
 namespace aql {
-
+class Ast;
 class ExecutionEngine;
 class ExecutorExpressionContext;
 class RegisterInfos;

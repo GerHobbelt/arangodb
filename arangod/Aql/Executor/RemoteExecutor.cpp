@@ -27,8 +27,8 @@
 #include "Aql/AqlCallStack.h"
 #include "Aql/AqlExecuteResult.h"
 #include "Aql/AqlItemBlockManager.h"
-#include "Aql/ClusterNodes.h"
 #include "Aql/ExecutionEngine.h"
+#include "Aql/ExecutionNode/RemoteNode.h"
 #include "Aql/InputAqlItemRow.h"
 #include "Aql/ProfileLevel.h"
 #include "Aql/QueryContext.h"
@@ -36,6 +36,7 @@
 #include "Aql/RestAqlHandler.h"
 #include "Aql/SharedQueryState.h"
 #include "Aql/SkipResult.h"
+#include "Basics/ScopeGuard.h"
 #include "Basics/VelocyPackHelper.h"
 #include "Cluster/ServerState.h"
 #include "Logger/LogMacros.h"
@@ -359,7 +360,7 @@ Result ExecutionBlockImpl<RemoteExecutor>::sendAsyncRequest(
   }
 
   arangodb::network::EndpointSpec spec;
-  auto res = network::resolveDestination(nf, _server, spec);
+  auto res = network::resolveDestination(nf, _server, spec).get();
   if (res != TRI_ERROR_NO_ERROR) {
     return Result(res);
   }

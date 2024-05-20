@@ -24,9 +24,9 @@
 #include "InsertModifier.h"
 
 #include "Aql/AqlValue.h"
+#include "Aql/Collection.h"
 #include "Aql/Executor/ModificationExecutor.h"
 #include "Aql/Executor/ModificationExecutorHelpers.h"
-#include "Basics/Common.h"
 #include "Basics/StaticStrings.h"
 #include "Transaction/Methods.h"
 #include "VocBase/LogicalCollection.h"

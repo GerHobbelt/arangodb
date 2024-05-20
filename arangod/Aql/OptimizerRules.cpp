@@ -23,41 +23,62 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "OptimizerRules.h"
+
 #include "ApplicationFeatures/ApplicationServer.h"
+#include "Aql/Ast.h"
 #include "Aql/Aggregator.h"
 #include "Aql/AqlFunctionFeature.h"
 #include "Aql/AstHelper.h"
 #include "Aql/AttributeNamePath.h"
-#include "Aql/ClusterNodes.h"
-#include "Aql/CollectNode.h"
 #include "Aql/CollectOptions.h"
 #include "Aql/Collection.h"
 #include "Aql/ConditionFinder.h"
-#include "Aql/DocumentProducingNode.h"
-#include "Aql/EnumeratePathsNode.h"
 #include "Aql/ExecutionEngine.h"
-#include "Aql/ExecutionNode.h"
+#include "Aql/ExecutionNode/CalculationNode.h"
+#include "Aql/ExecutionNode/CollectNode.h"
+#include "Aql/ExecutionNode/DistributeNode.h"
+#include "Aql/ExecutionNode/DocumentProducingNode.h"
+#include "Aql/ExecutionNode/EnumerateCollectionNode.h"
+#include "Aql/ExecutionNode/EnumerateListNode.h"
+#include "Aql/ExecutionNode/EnumeratePathsNode.h"
+#include "Aql/ExecutionNode/ExecutionNode.h"
+#include "Aql/ExecutionNode/FilterNode.h"
+#include "Aql/ExecutionNode/GatherNode.h"
+#include "Aql/ExecutionNode/IResearchViewNode.h"
+#include "Aql/ExecutionNode/IndexNode.h"
+#include "Aql/ExecutionNode/InsertNode.h"
+#include "Aql/ExecutionNode/JoinNode.h"
+#include "Aql/ExecutionNode/LimitNode.h"
+#include "Aql/ExecutionNode/MaterializeRocksDBNode.h"
+#include "Aql/ExecutionNode/ModificationNode.h"
+#include "Aql/ExecutionNode/RemoteNode.h"
+#include "Aql/ExecutionNode/RemoveNode.h"
+#include "Aql/ExecutionNode/ReplaceNode.h"
+#include "Aql/ExecutionNode/ReturnNode.h"
+#include "Aql/ExecutionNode/ScatterNode.h"
+#include "Aql/ExecutionNode/ShortestPathNode.h"
+#include "Aql/ExecutionNode/SortNode.h"
+#include "Aql/ExecutionNode/SubqueryEndExecutionNode.h"
+#include "Aql/ExecutionNode/SubqueryNode.h"
+#include "Aql/ExecutionNode/SubqueryStartExecutionNode.h"
+#include "Aql/ExecutionNode/TraversalNode.h"
+#include "Aql/ExecutionNode/UpdateNode.h"
+#include "Aql/ExecutionNode/UpsertNode.h"
+#include "Aql/ExecutionNode/WindowNode.h"
 #include "Aql/ExecutionPlan.h"
 #include "Aql/Expression.h"
 #include "Aql/Function.h"
-#include "Aql/IResearchViewNode.h"
-#include "Aql/IndexNode.h"
-#include "Aql/JoinNode.h"
+#include "Aql/IndexHint.h"
 #include "Aql/IndexStreamIterator.h"
-#include "Aql/ModificationNodes.h"
 #include "Aql/Optimizer.h"
 #include "Aql/OptimizerUtils.h"
 #include "Aql/Projections.h"
 #include "Aql/Query.h"
-#include "Aql/ShortestPathNode.h"
 #include "Aql/SortCondition.h"
-#include "Aql/SortNode.h"
-#include "Aql/SubqueryEndExecutionNode.h"
-#include "Aql/SubqueryStartExecutionNode.h"
+#include "Aql/SortElement.h"
+#include "Aql/SortInformation.h"
 #include "Aql/TraversalConditionFinder.h"
-#include "Aql/TraversalNode.h"
 #include "Aql/Variable.h"
-#include "Aql/WindowNode.h"
 #include "Aql/types.h"
 #include "Basics/AttributeNameParser.h"
 #include "Basics/NumberUtils.h"
@@ -71,18 +92,14 @@
 #include "Graph/ShortestPathOptions.h"
 #include "Graph/TraverserOptions.h"
 #include "Indexes/Index.h"
-#include "StorageEngine/EngineSelectorFeature.h"
 #include "StorageEngine/StorageEngine.h"
-#include "Transaction/CountCache.h"
 #include "Transaction/Methods.h"
-#include "Utils/CollectionNameResolver.h"
 #include "VocBase/Methods/Collections.h"
-#include "Logger/LogMacros.h"
+
+#include <absl/strings/str_cat.h>
 
 #include <span>
 #include <tuple>
-
-#include <absl/strings/str_cat.h>
 
 namespace {
 
@@ -1795,7 +1812,8 @@ void arangodb::aql::moveCalculationsDownRule(
         continue;
       }
       variable = nn->outVariable();
-    } else if (n->getType() == EN::SUBQUERY) {
+    } else {
+      TRI_ASSERT(n->getType() == EN::SUBQUERY);
       auto nn = ExecutionNode::castTo<SubqueryNode*>(n);
       if (!nn->isDeterministic() || nn->isModificationNode()) {
         // we will only move subqueries down that are deterministic and are not
@@ -1815,61 +1833,62 @@ void arangodb::aql::moveCalculationsDownRule(
       stack.pop_back();
 
       auto const currentType = current->getType();
-      bool tryToPushIntoSubquery = false;
 
-      if (currentType == EN::SUBQUERY && !current->isVarUsedLater(variable)) {
+      usedHere.clear();
+      current->getVariablesUsedHere(usedHere);
+
+      bool varUsedHere = std::find(usedHere.begin(), usedHere.end(),
+                                   variable) != usedHere.end();
+
+      if (n->getType() == EN::CALCULATION && currentType == EN::SUBQUERY &&
+          varUsedHere && !current->isVarUsedLater(variable)) {
+        // move calculations into subqueries if they are required by the
+        // subquery and not used later
         current = ExecutionNode::castTo<SubqueryNode*>(current)->getSubquery();
         while (current->hasDependency()) {
           current = current->getFirstDependency();
         }
-        tryToPushIntoSubquery = true;
+        lastNode = current;
       } else {
-        usedHere.clear();
-        current->getVariablesUsedHere(usedHere);
-
-        bool const done = std::find(usedHere.begin(), usedHere.end(),
-                                    variable) != usedHere.end();
-
-        if (done) {
+        if (varUsedHere) {
           // the node we're looking at needs the variable we're setting.
           // can't push further!
           break;
         }
-      }
 
-      if (tryToPushIntoSubquery) {
-        lastNode = current;
-      } else if (currentType == EN::FILTER || currentType == EN::SORT ||
-                 currentType == EN::LIMIT || currentType == EN::SUBQUERY ||
-                 currentType == EN::SINGLETON) {
-        // we found something interesting that justifies moving our node down
-        if (currentType == EN::LIMIT &&
-            arangodb::ServerState::instance()->isCoordinator()) {
-          // in a cluster, we do not want to move the calculations as far down
-          // as possible, because this will mean we may need to transfer a lot
-          // more data between DB servers and the coordinator
+        if (currentType == EN::FILTER || currentType == EN::SORT ||
+            currentType == EN::LIMIT || currentType == EN::SINGLETON ||
+            // do not move a subquery past another unrelated subquery
+            (currentType == EN::SUBQUERY && n->getType() != EN::SUBQUERY)) {
+          // we found something interesting that justifies moving our node down
+          if (currentType == EN::LIMIT &&
+              arangodb::ServerState::instance()->isCoordinator()) {
+            // in a cluster, we do not want to move the calculations as far down
+            // as possible, because this will mean we may need to transfer a lot
+            // more data between DB servers and the coordinator
 
-          // assume first that we want to move the node past the LIMIT
+            // assume first that we want to move the node past the LIMIT
 
-          // however, if our calculation uses any data from a
-          // collection/index/view, it probably makes sense to not move it,
-          // because the result set may be huge
-          if (::accessesCollectionVariable(plan.get(), n, vars)) {
-            break;
+            // however, if our calculation uses any data from a
+            // collection/index/view, it probably makes sense to not move it,
+            // because the result set may be huge
+            if (::accessesCollectionVariable(plan.get(), n, vars)) {
+              break;
+            }
           }
-        }
 
-        lastNode = current;
-      } else if (currentType == EN::INDEX ||
-                 currentType == EN::ENUMERATE_COLLECTION ||
-                 currentType == EN::ENUMERATE_IRESEARCH_VIEW ||
-                 currentType == EN::ENUMERATE_LIST ||
-                 currentType == EN::TRAVERSAL ||
-                 currentType == EN::SHORTEST_PATH ||
-                 currentType == EN::ENUMERATE_PATHS ||
-                 currentType == EN::COLLECT || currentType == EN::NORESULTS) {
-        // we will not push further down than such nodes
-        break;
+          lastNode = current;
+        } else if (currentType == EN::INDEX ||
+                   currentType == EN::ENUMERATE_COLLECTION ||
+                   currentType == EN::ENUMERATE_IRESEARCH_VIEW ||
+                   currentType == EN::ENUMERATE_LIST ||
+                   currentType == EN::TRAVERSAL ||
+                   currentType == EN::SHORTEST_PATH ||
+                   currentType == EN::ENUMERATE_PATHS ||
+                   currentType == EN::COLLECT || currentType == EN::NORESULTS) {
+          // we will not push further down than such nodes
+          break;
+        }
       }
 
       if (!current->hasParent()) {
@@ -4020,7 +4039,7 @@ auto arangodb::aql::createDistributeNodeFor(ExecutionPlan& plan,
       TRI_ASSERT(false);
       THROW_ARANGO_EXCEPTION_MESSAGE(
           TRI_ERROR_INTERNAL,
-          "Cannot distribute " + node->getTypeString() + ".");
+          absl::StrCat("Cannot distribute ", node->getTypeString(), "."));
     }
   }
 
@@ -5885,19 +5904,19 @@ struct RemoveRedundantOr {
       if (hasRedundantConditionWalker(rhs) &&
           !hasRedundantConditionWalker(lhs) && lhs->isConstant()) {
         if (!isComparisonSet) {
-          comparison = Ast::ReverseOperator(type);
+          comparison = Ast::reverseOperator(type);
           bestValue = lhs;
           isComparisonSet = true;
           return true;
         }
 
-        int lowhigh = isCompatibleBound(Ast::ReverseOperator(type), lhs);
+        int lowhigh = isCompatibleBound(Ast::reverseOperator(type), lhs);
         if (lowhigh == 0) {
           return false;
         }
 
         if (compareBounds(type, lhs, lowhigh)) {
-          comparison = Ast::ReverseOperator(type);
+          comparison = Ast::reverseOperator(type);
           bestValue = lhs;
         }
         return true;
@@ -7242,10 +7261,10 @@ static bool applyGeoOptimization(ExecutionPlan* plan, LimitNode* ln,
   for (std::pair<ExecutionNode*, Expression*> pair : info.exesToModify) {
     AstNode* root = pair.second->nodeForModification();
     auto pre = [&](AstNode const* node) -> bool {
-      return node == root || Ast::IsAndOperatorType(node->type);
+      return node == root || Ast::isAndOperatorType(node->type);
     };
     auto visitor = [&](AstNode* node) -> AstNode* {
-      if (Ast::IsAndOperatorType(node->type)) {
+      if (Ast::isAndOperatorType(node->type)) {
         std::vector<AstNode*> keep;  // always shallow copy node
         for (std::size_t i = 0; i < node->numMembers(); i++) {
           AstNode* child = node->getMemberUnchecked(i);
@@ -7423,12 +7442,13 @@ static bool isAllowedIntermediateSortLimitNode(ExecutionNode* node) {
     case ExecutionNode::MAX_NODE_TYPE_VALUE:
       break;
   }
-  THROW_ARANGO_EXCEPTION_FORMAT(
+  THROW_ARANGO_EXCEPTION_MESSAGE(
       TRI_ERROR_INTERNAL_AQL,
-      "Unhandled node type '%s' in sort-limit optimizer rule. Please report "
-      "this error. Try turning off the sort-limit rule to get your query "
-      "working.",
-      node->getTypeString().c_str());
+      absl::StrCat(
+          "Unhandled node type '", node->getTypeString(),
+          "' in sort-limit optimizer rule. Please report "
+          "this error. Try turning off the sort-limit rule to get your query "
+          "working."));
 }
 
 void arangodb::aql::sortLimitRule(Optimizer* opt,
@@ -8779,8 +8799,8 @@ void arangodb::aql::insertDistributeInputCalculation(ExecutionPlan& plan) {
       default: {
         TRI_ASSERT(false);
         THROW_ARANGO_EXCEPTION_MESSAGE(
-            TRI_ERROR_INTERNAL,
-            "Cannot distribute " + targetNode->getTypeString() + ".");
+            TRI_ERROR_INTERNAL, absl::StrCat("Cannot distribute ",
+                                             targetNode->getTypeString(), "."));
       }
     }
     TRI_ASSERT(inputVariable != nullptr);
