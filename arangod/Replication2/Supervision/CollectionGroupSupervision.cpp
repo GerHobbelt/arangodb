@@ -344,6 +344,12 @@ auto checkAssociatedReplicatedLogs(
       return UpdateReplicatedLogConfig{sheaf.replicatedLog, wantedConfig};
     }
 
+    for (auto const& p : log.target.participants) {
+      if (!health.contains(p.first)) {
+        return RemoveParticipantFromLog{log.target.id, p.first};
+      }
+    }
+
     auto currentReplicationFactor = log.target.participants.size();
     if (currentReplicationFactor < expectedReplicationFactor) {
       // add a new server to the replicated log
@@ -927,13 +933,15 @@ struct TransactionBuilder {
   }
 
   void operator()(UpdateCollectionGroupInPlan const& action) {
-    auto write = env.write().emplace_object(
-        basics::StringUtils::concatT("/arango/Plan/CollectionGroups/", database,
-                                     "/", action.id.id(),
-                                     "/attributes/mutable"),
-        [&](VPackBuilder& builder) {
-          velocypack::serialize(builder, action.spec);
-        });
+    auto write =
+        env.write()
+            .emplace_object(basics::StringUtils::concatT(
+                                "/arango/Plan/CollectionGroups/", database, "/",
+                                action.id.id(), "/attributes/mutable"),
+                            [&](VPackBuilder& builder) {
+                              velocypack::serialize(builder, action.spec);
+                            })
+            .inc("/arango/Plan/Version");
     env = write.precs()
               .isNotEmpty(basics::StringUtils::concatT(
                   "/arango/Target/CollectionGroups/", database, "/", gid.id()))
