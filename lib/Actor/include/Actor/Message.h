@@ -23,14 +23,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 #pragma once
 
-#include <Inspection/VPackWithErrorT.h>
 #include <memory>
+#include <type_traits>
 #include <variant>
 
-#include <velocypack/Builder.h>
-
-#include "DistributedActorPID.h"
-#include "MPSCQueue.h"
+#include "Actor/ExitReason.h"
+#include "Inspection/Format.h"
+#include "Inspection/Types.h"
 
 namespace arangodb::actor {
 
@@ -44,31 +43,48 @@ struct MessagePayload : MessagePayloadBase {
   MessagePayload(Args&&... args) : payload(std::forward<Args>(args)...) {}
 
   Payload payload;
+
+  template<typename Inspector>
+  friend inline auto inspect(Inspector& f, MessagePayload& x) {
+    return f.object(x).fields(f.field("payload", x.payload));
+  }
 };
-template<typename Payload, typename Inspector>
-auto inspect(Inspector& f, MessagePayload<Payload>& x) {
-  return f.object(x).fields(f.field("payload", x.payload));
-}
 
 namespace message {
 
-struct UnknownMessage {
-  DistributedActorPID sender;
-  DistributedActorPID receiver;
-};
-template<typename Inspector>
-auto inspect(Inspector& f, UnknownMessage& x) {
-  return f.object(x).fields(f.field("sender", x.sender),
-                            f.field("receiver", x.receiver));
-}
+template<typename PID>
+struct ActorDown {
+  PID actor;
+  ExitReason reason;
 
-struct ActorNotFound {
-  DistributedActorPID actor;
+  template<typename Inspector>
+  friend inline auto inspect(Inspector& f, ActorDown& x) {
+    return f.object(x).fields(f.field("actor", x.actor),
+                              f.field("reason", x.reason));
+  }
 };
-template<typename Inspector>
-auto inspect(Inspector& f, ActorNotFound& x) {
-  return f.object(x).fields(f.field("actor", x.actor));
-}
+
+template<typename PID>
+struct UnknownMessage {
+  PID sender;
+  PID receiver;
+
+  template<typename Inspector>
+  friend inline auto inspect(Inspector& f, UnknownMessage& x) {
+    return f.object(x).fields(f.field("sender", x.sender),
+                              f.field("receiver", x.receiver));
+  }
+};
+
+template<typename PID>
+struct ActorNotFound {
+  PID actor;
+
+  template<typename Inspector>
+  friend inline auto inspect(Inspector& f, ActorNotFound& x) {
+    return f.object(x).fields(f.field("actor", x.actor));
+  }
+};
 
 struct NetworkError {
   std::string message;
@@ -78,22 +94,26 @@ auto inspect(Inspector& f, NetworkError& x) {
   return f.object(x).fields(f.field("server", x.message));
 }
 
-struct ActorError : std::variant<UnknownMessage, ActorNotFound, NetworkError> {
-  using std::variant<UnknownMessage, ActorNotFound, NetworkError>::variant;
-};
-template<typename Inspector>
-auto inspect(Inspector& f, ActorError& x) {
-  return f.variant(x).unqualified().alternatives(
-      arangodb::inspection::type<UnknownMessage>("UnknownMessage"),
-      arangodb::inspection::type<ActorNotFound>("ActorNotFound"),
-      arangodb::inspection::type<NetworkError>("NetworkError"));
-}
+template<typename PID>
+struct ActorError
+    : std::variant<UnknownMessage<PID>, ActorNotFound<PID>, NetworkError> {
+  using std::variant<UnknownMessage<PID>, ActorNotFound<PID>,
+                     NetworkError>::variant;
 
-template<typename T, typename U>
+  template<typename Inspector>
+  friend inline auto inspect(Inspector& f, ActorError& x) {
+    return f.variant(x).unqualified().alternatives(
+        arangodb::inspection::type<UnknownMessage<PID>>("UnknownMessage"),
+        arangodb::inspection::type<ActorNotFound<PID>>("ActorNotFound"),
+        arangodb::inspection::type<NetworkError>("NetworkError"));
+  }
+};
+
+template<typename T, typename U, typename... Msgs>
 struct concatenator;
-template<typename... Args0, typename... Args1>
-struct concatenator<std::variant<Args0...>, std::variant<Args1...>> {
-  std::variant<Args0..., Args1...> item;
+template<typename... Args0, typename... Args1, typename... Msgs>
+struct concatenator<std::variant<Args0...>, std::variant<Args1...>, Msgs...> {
+  std::variant<Args0..., Args1..., Msgs...> item;
   concatenator(std::variant<Args0...> a) {
     std::visit([this](auto&& arg) { this->item = std::move(arg); },
                std::move(a));
@@ -102,12 +122,19 @@ struct concatenator<std::variant<Args0...>, std::variant<Args1...>> {
     std::visit([this](auto&& arg) { this->item = std::move(arg); },
                std::move(b));
   }
+  template<typename Msg>
+  requires((std::is_same_v<Msg, Msgs> || ...)) concatenator(Msg msg)
+      : item(std::move(msg)) {}
 };
 
-template<typename T>
-struct MessageOrError : concatenator<typename T::variant, ActorError::variant> {
-  using concatenator<typename T::variant, ActorError::variant>::concatenator;
+template<typename T, typename PID>
+struct MessageOrError
+    : concatenator<typename T::variant, typename ActorError<PID>::variant,
+                   ActorDown<PID>> {
+  using concatenator<typename T::variant, typename ActorError<PID>::variant,
+                     ActorDown<PID>>::concatenator;
 };
+
 }  // namespace message
 
 }  // namespace arangodb::actor
@@ -115,12 +142,15 @@ struct MessageOrError : concatenator<typename T::variant, ActorError::variant> {
 template<typename Payload>
 struct fmt::formatter<arangodb::actor::MessagePayload<Payload>>
     : arangodb::inspection::inspection_formatter {};
-template<>
-struct fmt::formatter<arangodb::actor::message::UnknownMessage>
+template<typename PID>
+struct fmt::formatter<arangodb::actor::message::UnknownMessage<PID>>
     : arangodb::inspection::inspection_formatter {};
-template<>
-struct fmt::formatter<arangodb::actor::message::ActorNotFound>
+template<typename PID>
+struct fmt::formatter<arangodb::actor::message::ActorNotFound<PID>>
     : arangodb::inspection::inspection_formatter {};
 template<>
 struct fmt::formatter<arangodb::actor::message::NetworkError>
+    : arangodb::inspection::inspection_formatter {};
+template<typename PID>
+struct fmt::formatter<arangodb::actor::message::ActorDown<PID>>
     : arangodb::inspection::inspection_formatter {};

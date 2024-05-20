@@ -97,6 +97,7 @@ auto inspect(Inspector& f, ResultState& x) {
 
 template<typename Runtime>
 struct ResultHandler : actor::HandlerBase<Runtime, ResultState> {
+  using ActorPID = typename Runtime::ActorPID;
   auto setExpiration() {
     this->state->expiration =
         std::chrono::system_clock::now() + this->state->ttl.duration;
@@ -134,7 +135,7 @@ struct ResultHandler : actor::HandlerBase<Runtime, ResultState> {
   auto operator()(message::CleanupResultWhenExpired msg)
       -> std::unique_ptr<ResultState> {
     if (this->state->expiration <= std::chrono::system_clock::now()) {
-      this->finish();
+      this->finish(actor::ExitReason::kFinished);
     } else {
       // send this message every 20 seconds
       std::chrono::seconds offset = std::chrono::seconds(20);
@@ -145,7 +146,7 @@ struct ResultHandler : actor::HandlerBase<Runtime, ResultState> {
   }
 
   auto operator()(message::CleanupResults msg) -> std::unique_ptr<ResultState> {
-    this->finish();
+    this->finish(actor::ExitReason::kFinished);
     for (auto const& actor : this->state->otherResultActors) {
       this->template dispatch<pregel::message::ResultMessages>(
           actor, pregel::message::CleanupResults{});
@@ -153,7 +154,7 @@ struct ResultHandler : actor::HandlerBase<Runtime, ResultState> {
     return std::move(this->state);
   }
 
-  auto operator()(actor::message::UnknownMessage unknown)
+  auto operator()(actor::message::UnknownMessage<ActorPID> unknown)
       -> std::unique_ptr<ResultState> {
     LOG_TOPIC("eb602", INFO, Logger::PREGEL)
         << fmt::format("Result Actor: Error - sent unknown message to {}",
@@ -161,7 +162,7 @@ struct ResultHandler : actor::HandlerBase<Runtime, ResultState> {
     return std::move(this->state);
   }
 
-  auto operator()(actor::message::ActorNotFound notFound)
+  auto operator()(actor::message::ActorNotFound<ActorPID> notFound)
       -> std::unique_ptr<ResultState> {
     LOG_TOPIC("e3156", INFO, Logger::PREGEL)
         << fmt::format("Result Actor: Error - receiving actor {} not found",

@@ -33,10 +33,11 @@
 struct ThreadPoolScheduler : arangodb::actor::IScheduler {
  private:
   arangodb::ThreadGuard threads;
-  std::queue<arangodb::actor::ActorWorker> jobs;
-  std::mutex queue_mutex;
+  std::queue<arangodb::actor::LazyWorker> jobs;
+  mutable std::mutex queue_mutex;
   std::condition_variable mutex_condition;
   bool should_terminate = false;
+  std::uint32_t workingThreads{0};
 
   auto loop() -> void {
     std::unique_lock lock(queue_mutex);
@@ -44,9 +45,11 @@ struct ThreadPoolScheduler : arangodb::actor::IScheduler {
       while (not jobs.empty()) {
         auto job = std::move(jobs.front());
         jobs.pop();
+        ++workingThreads;
         lock.unlock();
         job();
         lock.lock();
+        --workingThreads;
       }
       if (should_terminate) {
         return;
@@ -72,7 +75,13 @@ struct ThreadPoolScheduler : arangodb::actor::IScheduler {
     threads.joinAll();
   }
 
-  void queue(arangodb::actor::ActorWorker&& job) override {
+  template<class Fn>
+  auto isIdle(Fn idleCheck) const -> bool {
+    std::lock_guard lock{queue_mutex};
+    return jobs.empty() && workingThreads == 0 && idleCheck();
+  }
+
+  void queue(arangodb::actor::LazyWorker&& job) override {
     {
       std::unique_lock lock(queue_mutex);
       jobs.push(std::move(job));
