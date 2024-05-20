@@ -275,10 +275,15 @@ static bool isReplication2Leader(ShardID const& shname,
     auto logId = it->second;
     auto logStatus = localLogs.find(logId);
     if (logStatus == std::end(localLogs)) {
+      // NOTE: We would like to guarantee that the log exists, but we cannot
+      // do that right now, we can eventually have the log removed by the
+      // maintenance before the shard is dropped. Also note: The Log could be
+      // stolen from the lookup map for shard and log deletion where there is a
+      // small time-window, where the shard and log still exist, but are not
+      // listed.
       LOG_TOPIC("c1d8d", WARN, Logger::MAINTENANCE)
           << "Replicated log " << logId << " not found. Since the shard "
           << shname << " exists, so must the log";
-      TRI_ASSERT(false) << logId << " " << shname << " " << localShardsToLogs;
       return false;
     }
     return logStatus->second.status.role ==
@@ -1813,7 +1818,9 @@ static void reportCurrentReplicatedLog(
   if (!localTerm.has_value()) {
     return;
   }
-
+  if (!cur.isObject()) {
+    return;
+  }
   // load current into memory
   auto current = std::invoke([&]() -> std::optional<LogCurrent> {
     auto currentSlice = cur.get(cluster::paths::aliases::current()
@@ -1944,7 +1951,6 @@ arangodb::Result arangodb::maintenance::reportInCurrent(
       std::vector<std::string> ppath{AgencyCommHelper::path(), PLAN,
                                      COLLECTIONS, dbName};
       TRI_ASSERT(pdb.isObject());
-
       if (!localDBExists) {
         // If the local database is not found, the replication version is
         // assumed to be ONE. As fallback, the following code checks for the
@@ -1959,17 +1965,14 @@ arangodb::Result arangodb::maintenance::reportInCurrent(
           }
         }
       }
-
       // Plan of this database's collections
       pdb = pdb.get(ppath);
       if (!pdb.isNone()) {
         shardMap = getShardMap(pdb);
       }
     }
-
     auto cdbpath = std::vector<std::string>{AgencyCommHelper::path(), CURRENT,
                                             DATABASES, dbName, serverId};
-
     if (ldb.isObject()) {
       if (cur.isNone() || (cur.isObject() && !cur.hasKey(cdbpath))) {
         auto const localDatabaseInfo =

@@ -28,6 +28,7 @@
 #include "analysis/token_streams.hpp"
 #include "utils/bytes_utils.hpp"
 #include "utils/vpack_utils.hpp"
+#include "utils/utf8_utils.hpp"
 
 #include <velocypack/Builder.h>
 
@@ -63,7 +64,7 @@ bool ParseOptions(velocypack::Slice slice, Analyzer::Options& options) {
   if (!ParseNgramSize(slice, options.ngramSize)) {
     return false;
   }
-  if (!irs::analysis::analyzers::MakeAnalyzer(slice, options.analyzer)) {
+  if (!irs::analysis::analyzers::MakeAnalyzer(slice, options.baseAnalyzer)) {
     IRS_LOG_ERROR(absl::StrCat("Invalid analyzer definition in ",
                                irs::slice_to_string(slice), kParseError));
     return false;
@@ -100,24 +101,6 @@ static constexpr std::string_view kFill = "00000\xFF";
 
 constexpr std::string_view fill(size_t len) noexcept {
   return {kFill.data() + kFill.size() - len, len};
-}
-
-irs::byte_type const* nextUTF8(irs::byte_type const* it,
-                               irs::byte_type const* end) noexcept {
-  const uint32_t cp_start = *it++;
-  if (IRS_UNLIKELY(cp_start >= 0b1000'0000)) {
-    if (cp_start < 0b1110'0000) {
-      ++it;
-    } else if (cp_start < 0b1111'0000) {
-      it += 2;
-    } else if (cp_start < 0b1111'1000) {
-      it += 3;
-    }
-    if (it > end) {
-      it = end;
-    }
-  }
-  return it;
 }
 
 }  // namespace
@@ -191,8 +174,8 @@ bool Analyzer::next() {
   }
   if (auto size = _ngramTerm->value.size(); size > 1) {
     auto* begin = _ngramTerm->value.data();
-    auto* end = begin + _ngramTerm->value.size();
-    begin = nextUTF8(begin, end);
+    auto* end = begin + size;
+    begin = irs::utf8_utils::Next(begin, end);
     _ngramTerm->value = {begin, end};
     if (_ngramTerm->value.size() > 1) {
       return true;
@@ -212,7 +195,7 @@ bool Analyzer::next() {
 }
 
 Analyzer::Analyzer(Options&& options) noexcept
-    : _analyzer{std::move(options.analyzer)} {
+    : _analyzer{std::move(options.baseAnalyzer)} {
   if (!_analyzer) {
     // Fallback to default implementation
     _analyzer = std::make_unique<irs::string_token_stream>();
