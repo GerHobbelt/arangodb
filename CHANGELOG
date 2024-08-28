@@ -1,4 +1,4 @@
-v3.11.11 (XXXX-XX-XX)
+v3.11.11 (2024-08-28)
 ---------------------
 
 * Rebuilt included rclone v1.62.2 with go1.22.6.
