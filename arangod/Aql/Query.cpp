@@ -322,6 +322,10 @@ void Query::kill() {
   }
 }
 
+void Query::setKillFlag() {
+  _queryKilled.store(true, std::memory_order_acq_rel);
+}
+
 /// @brief the query's transaction id. returns 0 if no transaction
 /// has been assigned to the query yet. use this only for informational
 /// purposes
@@ -1177,7 +1181,7 @@ QueryResult Query::explain() {
         // optimizer statistics
         ensureExecutionTime();
         VPackObjectBuilder guard(&b, /*unindexed*/ true);
-        opt._stats.toVelocyPack(b);
+        opt.toVelocyPack(b);
         b.add("peakMemoryUsage", VPackValue(_resourceMonitor->peak()));
         b.add("executionTime", VPackValue(executionTime()));
       }
