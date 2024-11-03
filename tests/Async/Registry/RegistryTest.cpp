@@ -1,3 +1,25 @@
+////////////////////////////////////////////////////////////////////////////////
+/// DISCLAIMER
+///
+/// Copyright 2014-2024 ArangoDB GmbH, Cologne, Germany
+/// Copyright 2004-2014 triAGENS GmbH, Cologne, Germany
+///
+/// Licensed under the Business Source License 1.1 (the "License");
+/// you may not use this file except in compliance with the License.
+/// You may obtain a copy of the License at
+///
+///     https://github.com/arangodb/arangodb/blob/devel/LICENSE
+///
+/// Unless required by applicable law or agreed to in writing, software
+/// distributed under the License is distributed on an "AS IS" BASIS,
+/// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+/// See the License for the specific language governing permissions and
+/// limitations under the License.
+///
+/// Copyright holder is ArangoDB GmbH, Cologne, Germany
+///
+/// @author Julia Volmer
+////////////////////////////////////////////////////////////////////////////////
 #include "Async/Registry/promise.h"
 #include "Async/Registry/registry.h"
 
@@ -51,7 +73,7 @@ TEST_F(CoroutineRegistryTest, registers_promise_on_same_thread) {
 TEST_F(CoroutineRegistryTest, registers_promise_on_different_threads) {
   Registry registry;
 
-  std::jthread([&]() {
+  std::thread([&]() {
     auto thread_registry = registry.add_thread();
 
     auto promise = MyTestPromise{1};
@@ -62,7 +84,7 @@ TEST_F(CoroutineRegistryTest, registers_promise_on_different_threads) {
     thread_registry->mark_for_deletion(&promise);
     thread_registry->garbage_collect();
     registry.remove_thread(thread_registry);
-  });
+  }).join();
 }
 
 TEST_F(CoroutineRegistryTest,
@@ -88,7 +110,7 @@ TEST_F(CoroutineRegistryTest, iterates_over_promises_on_differen_threads) {
   auto first_promise = MyTestPromise{1};
   thread_registry->add(&first_promise);
 
-  std::jthread([&]() {
+  std::thread([&]() {
     auto thread_registry = registry.add_thread();
     auto second_promise = MyTestPromise{2};
     thread_registry->add(&second_promise);
@@ -98,7 +120,8 @@ TEST_F(CoroutineRegistryTest, iterates_over_promises_on_differen_threads) {
     thread_registry->mark_for_deletion(&second_promise);
     thread_registry->garbage_collect();
     registry.remove_thread(thread_registry);
-  });
+  }).join();
+
   thread_registry->mark_for_deletion(&first_promise);
   thread_registry->garbage_collect();
   registry.remove_thread(thread_registry);
@@ -142,24 +165,27 @@ TEST_F(
   EXPECT_EQ(all_ids(registry), (std::vector<uint64_t>{}));
 
   thread_registry->mark_for_deletion(&promise);
+  thread_registry->garbage_collect();
   EXPECT_TRUE(promise.destroyed);
 }
 
 TEST_F(CoroutineRegistryTest,
        different_thread_deletes_promise_after_thread_already_ended) {
-  Registry registry;
-  ThreadRegistry* thread_registry_on_different_thread;
   auto promise = MyTestPromise{1};
+  {
+    Registry registry;
+    std::shared_ptr<ThreadRegistry> thread_registry_on_different_thread;
 
-  std::jthread([&]() {
-    thread_registry_on_different_thread = registry.add_thread();
-    thread_registry_on_different_thread->add(&promise);
-    registry.remove_thread(thread_registry_on_different_thread);
-  });
+    std::thread([&]() {
+      thread_registry_on_different_thread = registry.add_thread();
+      thread_registry_on_different_thread->add(&promise);
+      registry.remove_thread(thread_registry_on_different_thread);
+    }).join();
 
-  EXPECT_EQ(all_ids(registry).size(), 0);
-  EXPECT_FALSE(promise.destroyed);
+    EXPECT_EQ(all_ids(registry).size(), 0);
+    EXPECT_FALSE(promise.destroyed);
 
-  thread_registry_on_different_thread->mark_for_deletion(&promise);
+    thread_registry_on_different_thread->mark_for_deletion(&promise);
+  }
   EXPECT_TRUE(promise.destroyed);
 }
