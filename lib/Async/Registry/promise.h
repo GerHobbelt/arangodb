@@ -34,40 +34,63 @@ namespace arangodb::async_registry {
 
 struct ThreadRegistry;
 
-struct Observables {
-  Observables(std::source_location loc) : _where(std::move(loc)) {}
-
-  std::source_location _where;
+struct Thread {
+  std::string name;
+  std::thread::id id;
 };
-
-struct PromiseInList : Observables {
-  PromiseInList(std::source_location loc) : Observables(std::move(loc)) {}
-
-  virtual auto destroy() noexcept -> void = 0;
-  virtual ~PromiseInList() = default;
-
-  // identifies the promise list it belongs to
-  std::shared_ptr<ThreadRegistry> registry = nullptr;
-
-  std::string thread_name;
-  std::thread::id thread_id;
-
-  PromiseInList* next = nullptr;
-  // only needed to remove an item
-  PromiseInList* previous = nullptr;
-  // only needed to garbage collect promises
-  PromiseInList* next_to_free = nullptr;
-};
-
 template<typename Inspector>
-auto inspect(Inspector& f, PromiseInList& x) {
+auto inspect(Inspector& f, Thread& x) {
+  return f.object(x).fields(f.field("name", x.name),
+                            f.field("id", fmt::format("{}", x.id)));
+}
+
+struct Promise {
+  Promise(Promise* next, std::shared_ptr<ThreadRegistry> registry,
+          std::source_location location);
+  ~Promise() = default;
+
+  auto mark_for_deletion() noexcept -> void;
+
+  Thread thread;
+  std::source_location entry_point;
+  // identifies the promise list it belongs to
+  std::shared_ptr<ThreadRegistry> registry;
+  Promise* next = nullptr;
+  // this needs to be an atomic because it is accessed during garbage collection
+  // which can happen in a different thread. This thread will load the value.
+  // Since there is only one transition, i.e. from nullptr to non-null ptr,
+  // any missed update will result in a pessimistic execution and not an error.
+  // More precise, the item might not be deleted, although it is not in head
+  // position and can be deleted. It will be deleted next round.
+  std::atomic<Promise*> previous = nullptr;
+  // only needed to garbage collect promises
+  Promise* next_to_free = nullptr;
+};
+template<typename Inspector>
+auto inspect(Inspector& f, Promise& x) {
   // perhaps just use for saving
   return f.object(x).fields(
-      f.field("source_location",
-              fmt::format("{}:{} {}", x._where.file_name(), x._where.line(),
-                          x._where.function_name())),
-      f.field("thread_name", x.thread_name),
-      f.field("thread_id", fmt::format("{}", x.thread_id)));
+      f.field("thread", x.thread),
+      f.field(
+          "source_location",
+          fmt::format("{}:{} {}", x.entry_point.file_name(),
+                      x.entry_point.line(), x.entry_point.function_name())));
 }
+
+struct AddToAsyncRegistry {
+  AddToAsyncRegistry() = default;
+  AddToAsyncRegistry(std::source_location loc);
+  AddToAsyncRegistry(AddToAsyncRegistry const&) = delete;
+  AddToAsyncRegistry& operator=(AddToAsyncRegistry const&) = delete;
+  AddToAsyncRegistry(AddToAsyncRegistry&&) = delete;
+  AddToAsyncRegistry& operator=(AddToAsyncRegistry&&) = delete;
+  ~AddToAsyncRegistry();
+
+ private:
+  struct noop {
+    void operator()(void*) {}
+  };
+  std::unique_ptr<Promise, noop> promise = nullptr;
+};
 
 }  // namespace arangodb::async_registry
