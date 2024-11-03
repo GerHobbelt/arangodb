@@ -51,16 +51,15 @@ parameters:
   # these are basically global constants
   build-targets:
     type: string
-    default: "arangod arangoimport arangoexport arangodump arangorestore arangobench frontend arangovpack"
+    default: "arangodb"
+    # The arangodb target consists of arangod and the list of client-tools which already
+    # conditionally contains arangobackup and arangosh, depending on whether we build in
+    # enterprise mode, and whether we build with V8 or not.
+    # This should also improve build times because this way the individual targets can be
+    # built in parallel (a list of individual targets is built serially).
   test-build-targets:
     type: string
     default: "arangodbtests fuertetest"
-  enterprise-build-targets:
-    type: string
-    default: "arangobackup"
-  v8-build-targets:
-    type: string
-    default: "arangosh"
 
 commands:
   checkout-arangodb:
@@ -241,6 +240,25 @@ jobs:
               echo "Nothing to cancel"
             fi
 
+  build-frontend:
+    docker:
+      - image: << pipeline.parameters.build-docker-image >>
+    resource_class: large
+    steps:
+      - checkout-arangodb:
+          with-submodules: false
+          destination: "/root/project"
+      - run:
+          name: Build frontend
+          command: |
+            cd js/apps/system/_admin/aardvark/APP/react
+            yarn install
+            yarn build
+      - persist_to_workspace:
+          root: .
+          paths:
+            - js/apps/system/_admin/aardvark/APP/react/build
+
   compile-linux:
     parameters:
       preset:
@@ -301,12 +319,6 @@ jobs:
           name: Build
           command: |
             TARGETS="<< pipeline.parameters.build-targets >>"
-            if [ << parameters.build-v8 >> = true ]; then
-              TARGETS="$TARGETS << pipeline.parameters.v8-build-targets >>"
-            fi
-            if [ << parameters.enterprise >> = true ]; then
-              TARGETS="$TARGETS << pipeline.parameters.enterprise-build-targets >>"
-            fi
             if [ << parameters.build-tests >> = true ]; then
               TARGETS="$TARGETS << pipeline.parameters.test-build-targets >>"
             fi
@@ -363,6 +375,10 @@ jobs:
             find build/ -iname *.o -delete || true
             find build/ -iname *.o.d -delete || true
             rm js/apps/system/_admin/aardvark/APP/react/node_modules -rf
+      - run:
+          name: List build artifacts
+          command: |
+            ls -Ssha build/bin/
       - run:
           name: SCCache Statistics
           command: sccache -s
