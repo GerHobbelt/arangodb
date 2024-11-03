@@ -75,7 +75,9 @@ def parse_arguments():
     parser.add_argument(
         "--ui", type=str, help="whether to run UI test [off|on|only|community]"
     )
-    parser.add_argument("--ui-testsuites", type=str, help="which test of UI job to run")
+    parser.add_argument(
+        "--ui-testsuites", type=str, help="which test of UI job to run [off|on|only]"
+    )
     parser.add_argument(
         "--ui-deployments", type=str, help="which deployments [CL, SG, ...] to run"
     )
@@ -263,7 +265,7 @@ def get_size(size, arch):
         "medium+": "arm.large",
         "large": "arm.large",
         "xlarge": "arm.xlarge",
-        "2xlarge": "arm.xlarge",
+        "2xlarge": "arm.2xlarge",
     }
     x86_sizes = {
         "small": "small",
@@ -271,7 +273,7 @@ def get_size(size, arch):
         "medium+": "medium+",
         "large": "large",
         "xlarge": "xlarge",
-        "2xlarge": "xlarge",
+        "2xlarge": "2xlarge",
     }
     return aarch64_sizes[size] if arch == "aarch64" else x86_sizes[size]
 
@@ -405,12 +407,9 @@ def add_rta_ui_test_jobs_to_workflow(args, workflow, build_config, build_job):
 
 def add_test_jobs_to_workflow(args, workflow, tests, build_config, build_job, repl2):
     if build_config.arch == "x64" and args.ui != "" and args.ui != "off":
-        if build_config.enterprise:
-            add_rta_ui_test_jobs_to_workflow(args, workflow, build_config, build_job)
-        elif args.ui == "community":
-            add_rta_ui_test_jobs_to_workflow(args, workflow, build_config, build_job)
-        if args.ui == "only":
-            return
+        add_rta_ui_test_jobs_to_workflow(args, workflow, build_config, build_job)
+    if args.ui == "only":
+        return
     if build_config.enterprise:
         workflow["jobs"].append(
             {
@@ -482,7 +481,7 @@ def add_build_job(workflow, build_config, overrides=None):
         "context": [
             "sccache-aws-bucket"
         ],  # add the environment variables to setup sccache for the S3 bucket
-        "resource-class": get_size("xlarge", build_config.arch),
+        "resource-class": get_size("2xlarge", build_config.arch),
         "name": name,
         "preset": preset,
         "enterprise": build_config.enterprise,
@@ -498,7 +497,7 @@ def add_build_job(workflow, build_config, overrides=None):
 def add_workflow(workflows, tests, build_config, args):
     repl2 = args.replication_two
     suffix = "nightly" if build_config.isNightly else "pr"
-    if args.ui != "" and args.ui != "off":
+    if build_config.arch == "x64" and args.ui != "" and args.ui != "off":
         ui = True
         if args.ui == "only":
             suffix = "only_ui_tests-" + suffix
@@ -526,8 +525,6 @@ def add_workflow(workflows, tests, build_config, args):
 
 
 def add_x64_community_workflow(workflows, tests, args):
-    if args.ui != "" and args.ui != "community" and args.ui != "off":
-        return
     if args.sanitizer != "" and args.nightly:
         # for nightly sanitizer runs we skip community and only test enterprise
         return
@@ -556,7 +553,7 @@ def add_x64_enterprise_workflow(workflows, tests, args):
 
 
 def add_aarch64_community_workflow(workflows, tests, args):
-    if args.ui == "" or args.ui == "off":
+    if args.ui != "only":
         add_workflow(
             workflows,
             tests,
@@ -566,7 +563,7 @@ def add_aarch64_community_workflow(workflows, tests, args):
 
 
 def add_aarch64_enterprise_workflow(workflows, tests, args):
-    if args.ui == "" or args.ui == "off":
+    if args.ui != "only":
         add_workflow(
             workflows,
             tests,
