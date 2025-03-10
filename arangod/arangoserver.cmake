@@ -98,6 +98,7 @@ add_library(arangoserver STATIC
   RestHandler/RestOptionsHandler.cpp
   RestHandler/RestQueryCacheHandler.cpp
   RestHandler/RestQueryHandler.cpp
+  RestHandler/RestQueryPlanCacheHandler.cpp
   RestHandler/RestShutdownHandler.cpp
   RestHandler/RestSimpleHandler.cpp
   RestHandler/RestSimpleQueryHandler.cpp
@@ -207,7 +208,6 @@ endif()
 target_link_libraries(arangoserver
   arango_agency
   arango_aql
-  arango_async_registry_feature
   arango_cluster_engine
   arango_cluster_methods
   arango_common_rest_handler
