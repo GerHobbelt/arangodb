@@ -11,9 +11,12 @@ target_sources(arango_aql PRIVATE
   EnumerateNearVectorExecutor.cpp
   EnumeratePathsExecutor.cpp
   FilterExecutor.cpp
+  GroupedSortExecutor.cpp
+  GroupedSortExecutorBackend.cpp
   HashedCollectExecutor.cpp
   IdExecutor.cpp
   IndexExecutor.cpp
+  IndexDistinctScanExecutor.cpp
   IResearchViewExecutor.cpp
   IResearchViewExecutorBase.cpp
   IResearchViewHeapSortExecutor.cpp

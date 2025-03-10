@@ -210,7 +210,7 @@ void replaceGatherNodeVariables(
       // no match. now check all our replacements and compare how
       // their sources are actually calculated (e.g. #2 may mean
       // "foo.bar")
-      cmp = it.toString();
+      cmp = it.toVarAccessString();
       for (auto const& it3 : replacements) {
         auto setter = plan->getVarSetBy(it3.first->id);
         if (setter == nullptr || setter->getType() != EN::CALCULATION) {
@@ -3098,7 +3098,7 @@ struct SortToIndexNode final
                      std::back_inserter(path),
                      [](auto const& a) { return a.name; });
       elements.push_back(
-          SortElement::createWithPath(outVariable, field.order, path));
+          SortElement::createWithPath(outVariable, field.asc, path));
     }
     return elements;
   }
@@ -3126,9 +3126,8 @@ struct SortToIndexNode final
     SortCondition sortCondition(_plan, _sorts, constAttributes,
                                 nonNullAttributes, _variableDefinitions);
 
-    if (!sortCondition.isEmpty() && sortCondition.isOnlyAttributeAccess() &&
-        sortCondition.isUnidirectional()) {
-      // we have found a sort condition, which is unidirectional
+    if (!sortCondition.isEmpty() && sortCondition.isOnlyAttributeAccess()) {
+      // we have found a sort condition
       // now check if any of the collection's indexes covers it
 
       Variable const* outVariable = enumerateCollectionNode->outVariable();
@@ -3151,32 +3150,45 @@ struct SortToIndexNode final
         condition->normalize(_plan);
         TRI_ASSERT(usedIndexes.size() == 1);
         IndexIteratorOptions opts;
-        opts.ascending = sortCondition.isAscending();
+        TRI_ASSERT(!sortCondition.isEmpty());
+        opts.ascending = sortCondition.sortFields()[0].asc;
         opts.useCache = false;
-        auto n = _plan->createNode<IndexNode>(
+        auto indexNode = _plan->createNode<IndexNode>(
             _plan, _plan->nextId(), enumerateCollectionNode->collection(),
             outVariable, usedIndexes,
             false,  // here we could always assume false as there is no lookup
                     // condition here
             std::move(condition), opts);
 
-        enumerateCollectionNode->CollectionAccessingNode::cloneInto(*n);
-        enumerateCollectionNode->DocumentProducingNode::cloneInto(_plan, *n);
+        enumerateCollectionNode->CollectionAccessingNode::cloneInto(*indexNode);
+        enumerateCollectionNode->DocumentProducingNode::cloneInto(_plan,
+                                                                  *indexNode);
 
-        _plan->replaceNode(enumerateCollectionNode, n);
+        _plan->replaceNode(enumerateCollectionNode, indexNode);
         _modified = true;
 
         if (coveredAttributes == sortCondition.numAttributes()) {
-          // if the index covers the complete sort condition, we can also remove
-          // the sort node
-          n->needsGatherNodeSort(
-              makeIndexSortElements(sortCondition, outVariable));
-          _plan->unlinkNode(_plan->getNodeById(_sortNode->id()));
+          deleteSortNode(indexNode, sortCondition);
+        } else if (usedIndexes.size() == 1 &&
+                   usedIndexes[0]->type() ==
+                       Index::IndexType::TRI_IDX_TYPE_PERSISTENT_INDEX) {
+          _sortNode->setGroupedElements(coveredAttributes);
         }
       }
     }
 
     return true;  // always abort further searching here
+  }
+
+  void deleteSortNode(IndexNode* indexNode, SortCondition& sortCondition) {
+    // sort condition is fully covered by index... now we can remove the
+    auto sortNode = _plan->getNodeById(_sortNode->id());
+    _plan->unlinkNode(sortNode);
+    // we need to have a sorted result later on, so we will need a sorted
+    // GatherNode in the cluster
+    indexNode->needsGatherNodeSort(
+        makeIndexSortElements(sortCondition, indexNode->outVariable()));
+    _modified = true;
   }
 
   bool handleIndexNode(IndexNode* indexNode) {
@@ -3230,7 +3242,6 @@ struct SortToIndexNode final
 
     // if we get here, we either have one index or multiple indexes on the same
     // attributes
-    bool handled = false;
 
     if (indexes.size() == 1 && isSorted) {
       // if we have just a single index and we can use it for the filtering
@@ -3249,13 +3260,13 @@ struct SortToIndexNode final
         (!sortCondition.isEmpty() && sortCondition.isOnlyAttributeAccess());
 
     // FIXME: why not just call index->supportsSortCondition here always?
-    bool indexCoversSortCondition = false;
+    bool indexFullyCoversSortCondition = false;
     if (index->type() == Index::IndexType::TRI_IDX_TYPE_INVERTED_INDEX) {
-      indexCoversSortCondition =
+      indexFullyCoversSortCondition =
           index->supportsSortCondition(&sortCondition, outVariable, 1)
               .supportsCondition;
     } else {
-      indexCoversSortCondition =
+      indexFullyCoversSortCondition =
           isOnlyAttributeAccess && isSorted && !isSparse &&
           sortCondition.isUnidirectional() &&
           sortCondition.isAscending() == indexNode->options().ascending &&
@@ -3263,46 +3274,43 @@ struct SortToIndexNode final
               sortCondition.numAttributes();
     }
 
-    if (indexCoversSortCondition) {
-      // sort condition is fully covered by index... now we can remove the
-      // sort node from the plan
-      _plan->unlinkNode(_plan->getNodeById(_sortNode->id()));
-      // we need to have a sorted result later on, so we will need a sorted
-      // GatherNode in the cluster
-      indexNode->needsGatherNodeSort(
-          makeIndexSortElements(sortCondition, outVariable));
-      _modified = true;
-      handled = true;
-    }
+    if (indexFullyCoversSortCondition) {
+      deleteSortNode(indexNode, sortCondition);
+    } else if (index->type() ==
+               Index::IndexType::TRI_IDX_TYPE_PERSISTENT_INDEX) {
+      auto [numberOfCoveredAttributes, sortIsAscending] =
+          sortCondition.coveredUnidirectionalAttributesWithDirection(
+              outVariable, fields);
+      if (isOnlyAttributeAccess && isSorted && !isSparse &&
+          numberOfCoveredAttributes > 0) {
+        indexNode->setAscending(sortIsAscending);
+        _sortNode->setGroupedElements(numberOfCoveredAttributes);
+        _modified = true;
+      }
+    } else {
+      if (isOnlyAttributeAccess && indexes.size() == 1) {
+        // special case... the index cannot be used for sorting, but we only
+        // compare with equality lookups.
+        // now check if the equality lookup attributes are the same as
+        // the index attributes
+        auto root = cond->root();
 
-    if (!handled && isOnlyAttributeAccess && indexes.size() == 1) {
-      // special case... the index cannot be used for sorting, but we only
-      // compare with equality lookups.
-      // now check if the equality lookup attributes are the same as
-      // the index attributes
-      auto root = cond->root();
+        if (root != nullptr) {
+          auto condNode = root->getMember(0);
 
-      if (root != nullptr) {
-        auto condNode = root->getMember(0);
+          if (condNode->isOnlyEqualityMatch()) {
+            // now check if the index fields are the same as the sort condition
+            // fields e.g. FILTER c.value1 == 1 && c.value2 == 42 SORT c.value1,
+            // c.value2
+            size_t const numCovered =
+                sortCondition.coveredAttributes(outVariable, fields);
 
-        if (condNode->isOnlyEqualityMatch()) {
-          // now check if the index fields are the same as the sort condition
-          // fields e.g. FILTER c.value1 == 1 && c.value2 == 42 SORT c.value1,
-          // c.value2
-          size_t const numCovered =
-              sortCondition.coveredAttributes(outVariable, fields);
-
-          if (numCovered == sortCondition.numAttributes() &&
-              sortCondition.isUnidirectional() &&
-              (isSorted || fields.size() >= sortCondition.numAttributes())) {
-            // no need to sort
-            _plan->unlinkNode(_plan->getNodeById(_sortNode->id()));
-            indexNode->setAscending(sortCondition.isAscending());
-            // we need to have a sorted result later on, so we will need a
-            // sorted GatherNode in the cluster
-            indexNode->needsGatherNodeSort(
-                makeIndexSortElements(sortCondition, outVariable));
-            _modified = true;
+            if (numCovered == sortCondition.numAttributes() &&
+                sortCondition.isUnidirectional() &&
+                (isSorted || fields.size() >= sortCondition.numAttributes())) {
+              deleteSortNode(indexNode, sortCondition);
+              indexNode->setAscending(sortCondition.isAscending());
+            }
           }
         }
       }
@@ -4723,8 +4731,9 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
             collectNode->groupVariables(copy);
 
             replaceGatherNodeVariables(plan.get(), gatherNode, replacements);
-          } else if (  //! collectNode->groupVariables().empty() &&
-              !collectNode->hasOutVariable()) {
+          } else if (!collectNode->hasOutVariable() ||
+                     collectNode->getOptions()
+                         .aggregateIntoExpressionOnDBServers) {
             // clone a COLLECT v1 = expr, v2 = expr ... operation from the
             // coordinator to the DB server(s), and leave an aggregate COLLECT
             // node on the coordinator for total aggregation
@@ -4760,11 +4769,25 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
               outVars.emplace_back(GroupVarInfo{out, it.inVar});
             }
 
+            Variable const* expressionVariable = nullptr;
+            Variable const* outVariable = nullptr;
+            std::vector<std::pair<Variable const*, std::string>> keepVariables;
+
+            bool const aggregateOutVariablesOnDBServers =
+                collectNode->getOptions().aggregateIntoExpressionOnDBServers &&
+                collectNode->hasOutVariable();
+
+            if (aggregateOutVariablesOnDBServers) {
+              outVariable =
+                  plan->getAst()->variables()->createTemporaryVariable();
+              expressionVariable = collectNode->expressionVariable();
+              keepVariables = collectNode->keepVariables();
+            }
+
             auto dbCollectNode = plan->createNode<CollectNode>(
                 plan.get(), plan->nextId(), collectNode->getOptions(), outVars,
-                dbServerAggVars, nullptr, nullptr,
-                std::vector<std::pair<Variable const*, std::string>>{},
-                collectNode->variableMap());
+                dbServerAggVars, expressionVariable, outVariable,
+                std::move(keepVariables), collectNode->variableMap());
 
             dbCollectNode->addDependency(previous);
             target->replaceDependency(previous, dbCollectNode);
@@ -4786,6 +4809,11 @@ void arangodb::aql::collectInClusterRule(Optimizer* opt,
               it.inVar = dbServerAggVars[j].outVar;
               it.type = Aggregator::runOnCoordinatorAs(it.type);
               ++j;
+            }
+
+            if (aggregateOutVariablesOnDBServers) {
+              TRI_ASSERT(outVariable != nullptr);
+              collectNode->setMergeListsAggregation(outVariable);
             }
 
             removeGatherNodeSort = (dbCollectNode->aggregationMethod() !=
@@ -5003,6 +5031,7 @@ void arangodb::aql::distributeSortToClusterRule(
         case EN::ENUMERATE_LIST:
         case EN::ENUMERATE_NEAR_VECTORS:
         case EN::COLLECT:
+        case EN::INDEX_COLLECT:
         case EN::INSERT:
         case EN::REMOVE:
         case EN::REPLACE:
@@ -7253,6 +7282,21 @@ static bool optimizeSortNode(ExecutionPlan* plan, SortNode* sort,
       // establish a cross-shard sortedness by distance.
       info.exesToModify.emplace(sort, expr);
       info.nodesToRemove.emplace(expr->node());
+    } else {
+      // In the cluster case, we want to leave the SORT node in - for now!
+      // This is to achieve that the GATHER node which is introduced to
+      // distribute the query in the cluster remembers to sort things
+      // using merge sort. However, later there will be a rule which
+      // moves the sorting to the dbserver. When this rule is triggered,
+      // we do not want to reinsert the SORT node on the dbserver, since
+      // there, the items are already sorted by means of the geo index.
+      // Therefore, we tell the sort node here, not to be reinserted
+      // on the dbserver later on.
+      // This is crucial to avoid that the SORT node remains and pulls
+      // the whole collection out of the geo index, on the grounds that
+      // the SORT node wants to sort the results, which is very bad for
+      // performance.
+      sort->dontReinsertInCluster();
     }
     return true;
   }
@@ -7603,6 +7647,7 @@ static bool isAllowedIntermediateSortLimitNode(ExecutionNode* node) {
     case ExecutionNode::UPSERT:
     case ExecutionNode::TRAVERSAL:
     case ExecutionNode::INDEX:
+    case ExecutionNode::INDEX_COLLECT:
     case ExecutionNode::JOIN:
     case ExecutionNode::SHORTEST_PATH:
     case ExecutionNode::ENUMERATE_PATHS:

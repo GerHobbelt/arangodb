@@ -44,7 +44,9 @@ class LogicalCollection;
 struct IndexIteratorOptions;
 struct ResourceMonitor;
 struct AqlIndexStreamIterator;
+struct AqlIndexDistinctScanIterator;
 struct IndexStreamOptions;
+struct IndexDistinctScanOptions;
 
 struct UserVectorIndexDefinition;
 
@@ -325,13 +327,19 @@ class Index {
     Internals = 8,
     /// @brief serialize for inventory
     Inventory = 16,
+    /// @brief serialize for maintenance work
+    /// This mode should be used to indicate which
+    /// data should be transferred in maintenance service
+    /// For now this is same as Internals mode except for
+    /// vector index where we ignore trainedData
+    Maintenance = 32,
   };
 
   /// @brief helper for building flags
   template<typename... Args>
   static inline constexpr std::underlying_type<Serialize>::type makeFlags(
       Serialize flag, Args... args) {
-    return static_cast<std::underlying_type<Serialize>::type>(flag) +
+    return static_cast<std::underlying_type<Serialize>::type>(flag) |
            makeFlags(args...);
   }
 
@@ -431,6 +439,11 @@ class Index {
 
   virtual std::unique_ptr<AqlIndexStreamIterator> streamForCondition(
       transaction::Methods* trx, IndexStreamOptions const&);
+
+  virtual bool supportsDistinctScan(
+      IndexDistinctScanOptions const&) const noexcept;
+  virtual std::unique_ptr<AqlIndexDistinctScanIterator> distinctScanFor(
+      transaction::Methods* trx, IndexDistinctScanOptions const&);
 
   virtual UserVectorIndexDefinition const& getVectorIndexDefinition();
 
