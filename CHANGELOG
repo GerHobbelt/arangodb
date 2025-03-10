@@ -1,6 +1,86 @@
 devel
 -----
 
+* Add a vector index based on faiss implementation. The current vector index 
+  implementation supports the L2 and cosine metrics. To create a vector index,
+  the vector field(s) in the collection must already be populated with data. Here is an
+  example of a vector index creation:
+  ```
+    db.<collection>.ensureIndex({
+      type: "vector",
+      fields: ["value1"],
+      params: {
+        "metric": "l2",
+        "dimension": 300,
+        "nLists": 100
+      }
+    });
+  ````
+  Where the parameters are:
+  - `metric`: defines how similarity/distance is calculated, can be
+    l2 or cosine,
+  - `nLists`: number of lists to create,
+  - `dimension`: vector dimensions, ArangoDB will also check that all the vectors
+    have the correct number of components,
+  - `trainingIterations`: how many training iterations will be used, 
+  The current limitation is that a vector index can be created only on a single field.
+  The vector index creation has two phases, training in which the centroids are being determined
+  from the subset of data, and insertion phase in which the lists are being populated.
+  To trigger the vector index an appropriate `APPROX_NEAR` function must be used
+  along with `SORT` and `LIMIT` clauses e.g.:
+  ```
+    FOR d IN docs
+    LET distance = APPROX_NEAR_L2(d.vector, @queryVector)
+    SORT distance
+    LIMIT 10
+    RETURN {d, distance}
+  ````
+  This returns the top 10 nearest neighbors to `@queryVector`.
+
+* Introduce expiry time for idle TCP/IP connections in the ConnectionCache
+  (for `SimpleHttpClient`) with a default of 120s. This is to prevent
+  errors in replication caused by cloud environments terminating
+  connections. Also add retries in a few places. Also increase the
+  timeout in initial sync to transfer up to 5000 documents from 25s to
+  900s. This addresses BTS-2011, BTS-2035 and BTS-2042.
+
+* If a coordinator cannot send a heartbeat to the agency, it will shut down
+  itself after 30 mins (configurable by the startup option
+  `--cluster.no-heartbeat-delay-before-shutdown` whose default is 1800.
+  This is to ensure that servers which are automatically cleaned up,
+  because they are away for too long cannot disturb hotbackups by running
+  transactions.
+
+* Reduce the time until an expired server is removed from the agency to 1h 
+  (from 24h). This helps with BTS-2039 and thus helps hotbackups to go
+  through in more cases when coordinators have crashed. The time is
+  configurable with the `--agency.supervision-expired-servers-grace-time`
+  command line option.
+
+* Changed the priority of WebUI request to prevent endless loading if the
+  server is under load
+
+* Truncate error messages by rclone for TransferJobs to avoid excessive
+  memory use in the agency. Keep only 10 finished TransferJobs in agency.
+  This fixes BTS-2041.
+
+* Don't cleanup failed agency jobs if they are subjobs of pending jobs.
+  This avoids a bug in CleanOutServer jobs, where such a job could complete
+  seemingly successfully despite the fact that some MoveShard jobs had 
+  actually failed. This fixes BTS-2022.
+
+* Disallow the KEEP keyword in conjunction with INTO var = expr when doing
+  COLLECT in an AQL query. The KEEP clause had no effect.
+
+* Do check for replication version 2 in a safe way. This fixes BTS-2040.
+
+* Put in more diagnostics and avoid a crash in follower on commit of a
+  transaction in case a collection is already gone (BTS-2033).
+
+* Fix delivery of planCacheKey attribute for batched and streaming cursors.
+
+* Fix view usage in cached query plans.
+
 * Make it an error if usePlanCache is set to true but the query is not 
   eligible for query plan caching. This is better for debugging.
 
