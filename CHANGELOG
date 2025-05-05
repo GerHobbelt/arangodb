@@ -1,6 +1,21 @@
 devel
 -----
 
+* Add visibility for recent api calls via a new API /_admin/server/api-calls.
+
+* Fix TSAN issue in LogicalCollection.
+
+* FE-541: update disk usage message.
+
+* Simplify Maintenance by removing unused features.
+
+* Fix BTS-2100: Due to a priority inversion it was possible that a lot of
+  scheduled SynchronizeShard actions blocked higher priority 
+  TakeoverShardLeadership actions in the cluster Maintenance. This
+  could lead to service interruption during upgrades and after failovers.
+
+* Updated ArangoDB Starter to v0.19.9-preview-3.
+
 * FE-538: fix frontend build warnings.
 
 * FE-482: fix multiple issues with search view UI.
