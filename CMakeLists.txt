@@ -73,7 +73,7 @@ set(ARANGODB_VERSION_MINOR "12")
 
 # when building the nightly ARANGODB_VERSION_PATCH will be set
 if(NOT DEFINED ARANGODB_VERSION_PATCH)
-  set(ARANGODB_VERSION_PATCH "6")
+  set(ARANGODB_VERSION_PATCH "7")
   set(ARANGODB_VERSION_RELEASE_TYPE "devel")
   set(ARANGODB_VERSION_RELEASE_NUMBER "")
 else()
@@ -166,8 +166,9 @@ endif()
 # note that V8 will always be built, regardless of the value of this option.
 # this is required because the V8 build step also builds ICU, which is needed
 # in all programs.
-# if set to OFF, V8 will not be linked to arangod and the client-tools, 
-# and V8 integration code for arangod will not be compiled. 
+# if set to OFF, V8 will not be linked to arangod.
+# The arangosh will be built with V8 support in order to execute tests.
+# with V8 integration code for arangod will not be compiled.
 # additionally, arangosh will not be built.
 # setting the option to OFF will further disable all JavaScript support in
 # arangod, rendering the web UI, JavaScript transactions, AQL user-defined

@@ -8904,6 +8904,7 @@ void arangodb::aql::insertDistributeInputCalculation(ExecutionPlan& plan) {
     auto createKeys = bool{false};
     auto allowKeyConversionToObject = bool{false};
     auto allowSpecifiedKeys = bool{false};
+    bool canProjectOnlyId{false};
 
     DistributeType fixupGraphInput = DistributeType::DOCUMENT;
 
@@ -8926,6 +8927,12 @@ void arangodb::aql::insertDistributeInputCalculation(ExecutionPlan& plan) {
         setInVariable = [insertNode](Variable* var) {
           insertNode->setInVariable(var);
         };
+
+        alternativeVariable = insertNode->oldSmartGraphVariable();
+        if (alternativeVariable != nullptr) {
+          canProjectOnlyId = true;
+        }
+
       } break;
       case ExecutionNode::REMOVE: {
         auto* removeNode = ExecutionNode::castTo<RemoveNode*>(targetNode);
@@ -9091,6 +9098,8 @@ void arangodb::aql::insertDistributeInputCalculation(ExecutionPlan& plan) {
               ast->createNodeValueBool(allowSpecifiedKeys)));
           flags->addMember(ast->createNodeObjectElement(
               "ignoreErrors", ast->createNodeValueBool(ignoreErrors)));
+          flags->addMember(ast->createNodeObjectElement(
+              "projectOnlyId", ast->createNodeValueBool(canProjectOnlyId)));
           auto const& collectionName = collection->name();
           flags->addMember(ast->createNodeObjectElement(
               "collection",
